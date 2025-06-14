@@ -38,7 +38,7 @@ class FridayAssistant:
         
         # Пути к приложениям
         self.music_apps = {
-            'default': os.path.expanduser('~') + r'\AppData\Local\Yandex\YandexMusic\YandexMusic.exe',
+            'default': os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk',
             'spotify': os.path.expanduser('~') + r'\AppData\Roaming\Spotify\Spotify.exe',
             'yandex': r'C:\Program Files\Windows Media Player\wmplayer.exe'
         }
