@@ -12,6 +12,7 @@ from collections import deque
 import random
 import sys
 import io
+import webbrowser
 
 # Настройка кодировки для Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -43,6 +44,8 @@ class FridayAssistant:
             'yandex': r'C:\Program Files\Windows Media Player\wmplayer.exe'
         }
         
+        self.weapon_url = "https://yandex.ru/pogoda/"
+
         # Состояние
         self.is_active = False
         self.should_exit = False
@@ -51,6 +54,8 @@ class FridayAssistant:
             'пятница', 'пятницу', 'пятнича', 'пятничка',
             'friday', 'фрайди', 'эй пятница', 'привет пятница'
         ]
+
+
 
     def configure_recognizer(self):
         """Настройка параметров распознавания речи"""
@@ -210,6 +215,27 @@ class FridayAssistant:
         except Exception as e:
             print(f"Ошибка громкости: {e}")
 
+    def show_weather(self, location=None):
+        try:
+            if location:
+                location_mapping = {
+                    "москве": "moscow",
+                    "ярославле": "yaroslavl"
+                }
+                location_key = location.lower()
+                if location_key in location_mapping:
+                    url = f"{self.weapon_url}{location_mapping[location_key]}"
+                else:
+                    url = f"{self.weapon_url}{location.lower().replace(' ', '-')}"
+            else:
+                url = self.weather_url
+
+            webbrowser.open(url)
+            self.speal(f"Открываю погоду {'в ' + location if location else ''}")
+        except Exception as e:
+            print(f"Ошибка открытия погоды: {e}")
+            self.speak("Открываю")
+
     def process_command(self, command):
         """Обработка распознанных команд"""
         if not command:
@@ -236,6 +262,17 @@ class FridayAssistant:
                 self.start_music_player('spotify')
             else:
                 self.start_music_player()
+
+
+        # Погода
+        elif 'погода' in command:
+            location = None
+            if "погода в" in command:
+                location = command.split("погода в")[1].strip()
+            elif "погода" in command and len(command.split()) > 1:
+                location = command.split("погода")[1].strip()
+
+            self.show_weather(location)
         
         # Калибровка
         elif "калибровка" in command:
@@ -258,7 +295,7 @@ class FridayAssistant:
 
     def calibrate_microphone(self, source):
         """Калибровка микрофона"""
-        self.speak("Провожу калибровку микрофона. Пожалуйста, сохраняйте тишину несколько секунд.")
+        self.speak("Провожу калибровку микрофона.")
         self.recognizer.adjust_for_ambient_noise(
             source,
             duration=self.ambient_adjust_duration
@@ -274,7 +311,7 @@ class FridayAssistant:
             self.calibrate_microphone(source)
             
             try:
-                self.speak("Пятница активирована. Говорите 'Пятница' для активации.")
+                self.speak("Пятница активирована.")
                 while not self.should_exit:
                     try:
                         if self.listen_for_trigger(source):
