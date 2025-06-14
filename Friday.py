@@ -11,14 +11,19 @@ import numpy as np
 from collections import deque
 import random
 import sys
+import io
+
+# Настройка кодировки для Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 class FridayAssistant:
     def __init__(self):
         # Настройки чувствительности
-        self.energy_threshold = 4000
-        self.dynamic_energy_ratio = 1.5
-        self.pause_threshold = 0.8
-        self.phrase_threshold = 0.3
+        self.initial_energy_threshold = 4000
+        self.dynamic_energy_ratio = 1.8
+        self.pause_threshold = 1.0
+        self.phrase_threshold = 0.5
+        self.ambient_adjust_duration = 2
         
         # Инициализация компонентов
         self.engine = self.init_tts()
@@ -29,27 +34,31 @@ class FridayAssistant:
         self.configure_recognizer()
         
         # История для анализа звука
-        self.energy_history = deque(maxlen=20)
+        self.energy_history = deque(maxlen=15)
         
         # Пути к приложениям
         self.music_apps = {
-            'yandex': os.path.expanduser('~') + r'\AppData\Local\Yandex\YandexMusic\YandexMusic.exe',
+            'default': os.path.expanduser('~') + r'\AppData\Local\Yandex\YandexMusic\YandexMusic.exe',
             'spotify': os.path.expanduser('~') + r'\AppData\Roaming\Spotify\Spotify.exe',
-            'default': r'C:\Program Files\Windows Media Player\wmplayer.exe'
+            'yandex': r'C:\Program Files\Windows Media Player\wmplayer.exe'
         }
         
         # Состояние
         self.is_active = False
         self.should_exit = False
         self.last_activation = 0
+        self.activation_phrases = [
+            'пятница', 'пятницу', 'пятнича', 'пятничка',
+            'friday', 'фрайди', 'эй пятница', 'привет пятница'
+        ]
 
     def configure_recognizer(self):
         """Настройка параметров распознавания речи"""
-        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.dynamic_energy_threshold = False
         self.recognizer.pause_threshold = self.pause_threshold
         self.recognizer.phrase_threshold = self.phrase_threshold
-        self.recognizer.non_speaking_duration = 0.2
-        self.recognizer.energy_threshold = self.energy_threshold
+        self.recognizer.non_speaking_duration = 0.3
+        self.recognizer.energy_threshold = self.initial_energy_threshold
 
     def init_tts(self):
         """Инициализация синтезатора речи"""
@@ -70,61 +79,71 @@ class FridayAssistant:
         self.engine.say(text)
         self.engine.runAndWait()
 
-    def calculate_rms(self, audio_data):
+    def calculate_audio_energy(self, audio_data):
         """Вычисление уровня звука"""
         audio_buffer = np.frombuffer(audio_data.get_raw_data(), dtype=np.int16)
-        return np.sqrt(np.mean(audio_buffer**2))
+        if len(audio_buffer) == 0:
+            return 0
+        return 20 * np.log10(np.sqrt(np.mean(audio_buffer**2)) + 1e-10)
 
-    def adaptive_energy_threshold(self, audio_data):
-        """Адаптивная настройка чувствительности микрофона"""
-        try:
-            energy = self.calculate_rms(audio_data)
-            self.energy_history.append(energy)
+    def update_energy_threshold(self, current_energy):
+        """Адаптивная настройка порога чувствительности"""
+        self.energy_history.append(current_energy)
+        
+        if len(self.energy_history) > 5:
+            background_level = np.percentile(self.energy_history, 75)
+            new_threshold = background_level * self.dynamic_energy_ratio
+            current_threshold = self.recognizer.energy_threshold
+            smoothed_threshold = current_threshold * 0.8 + new_threshold * 0.2
             
-            if len(self.energy_history) > 5:
-                median_energy = np.median(self.energy_history)
-                new_threshold = median_energy * self.dynamic_energy_ratio
-                self.recognizer.energy_threshold = np.clip(
-                    new_threshold,
-                    300,  # минимальный порог
-                    6000  # максимальный порог
-                )
-        except Exception as e:
-            print(f"Ошибка адаптации порога: {e}")
-            self.recognizer.energy_threshold = 4000
+            self.recognizer.energy_threshold = np.clip(
+                smoothed_threshold,
+                max(300, background_level * 1.3),
+                min(6000, background_level * 3)
+            )
 
     def listen_for_trigger(self, source):
         """Прослушивание триггерного слова"""
         try:
-            print(f"🔴 Ожидание (порог: {self.recognizer.energy_threshold:.1f})...")
+            print(f"[ОЖИДАНИЕ] Текущий порог: {self.recognizer.energy_threshold:.1f}")
+            
             audio = self.recognizer.listen(
                 source,
-                timeout=3,
-                phrase_time_limit=2
+                timeout=2,
+                phrase_time_limit=3
             )
             
-            self.adaptive_energy_threshold(audio)
+            current_energy = self.calculate_audio_energy(audio)
+            self.update_energy_threshold(current_energy)
             
             try:
-                text = self.recognizer.recognize_google(audio, language="ru-RU").lower()
+                text = self.recognizer.recognize_google(
+                    audio,
+                    language="ru-RU",
+                    show_all=False
+                ).lower()
+                
                 print(f"Распознано: {text}")
                 
-                trigger_phrases = [
-                    'пятница', 'пятницу', 'пятнича', 'пятничка',
-                    'friday', 'фрайди', 'эй пятница'
-                ]
-                
-                if any(phrase in text for phrase in trigger_phrases):
+                if any(phrase in text for phrase in self.activation_phrases):
                     current_time = time.time()
-                    if current_time - self.last_activation > 5:
+                    if current_time - self.last_activation > 3:
                         self.last_activation = current_time
                         return True
                         
             except sr.UnknownValueError:
-                pass
+                self.recognizer.energy_threshold = min(
+                    self.recognizer.energy_threshold * 1.2,
+                    6000
+                )
+            except sr.RequestError as e:
+                print(f"Ошибка сервиса распознавания: {e}")
                 
         except sr.WaitTimeoutError:
-            pass
+            self.recognizer.energy_threshold = max(
+                self.recognizer.energy_threshold * 0.9,
+                300
+            )
             
         return False
 
@@ -137,13 +156,13 @@ class FridayAssistant:
             "Чем могу помочь?",
             "Готова помочь"
         ]))
-        return self.active_listening()
+        self.active_listening()
 
     def active_listening(self):
         """Режим активного прослушивания команд"""
         with sr.Microphone() as source:
             try:
-                print("🟢 Активный режим...")
+                print("[АКТИВНЫЙ РЕЖИМ]...")
                 audio = self.recognizer.listen(
                     source,
                     timeout=5,
@@ -170,11 +189,10 @@ class FridayAssistant:
                     self.speak(f"Запускаю {app_name}")
                     return
             
-            # Альтернативный способ запуска
             commands = {
-                'yandex': 'start yandexmusic:',
+                'default': 'start yandexmusic:',
                 'spotify': 'start spotify:',
-                'default': 'start wmplayer'
+                'yandex': 'start wmplayer'
             }
             subprocess.run(commands.get(app_name, commands['default']), shell=True)
             self.speak(f"Запускаю {app_name}")
@@ -219,6 +237,11 @@ class FridayAssistant:
             else:
                 self.start_music_player()
         
+        # Калибровка
+        elif "калибровка" in command:
+            self.speak("Начинаю калибровку микрофона")
+            self.calibrate_microphone(source=sys._getframe(1).f_locals.get('source'))
+        
         # Прочие команды
         elif "спасибо" in command:
             self.speak("Всегда пожалуйста!")
@@ -231,14 +254,19 @@ class FridayAssistant:
     def return_to_sleep(self):
         """Возврат в режим ожидания"""
         self.is_active = False
-        print("Возврат в спящий режим...")
+        print("Возврат в режим ожидания...")
 
-    def calibrate_microphone(self, source, duration=3):
+    def calibrate_microphone(self, source):
         """Калибровка микрофона"""
-        self.speak("Калибровка микрофона... Не шумите несколько секунд")
-        self.recognizer.adjust_for_ambient_noise(source, duration=duration)
-        self.energy_threshold = self.recognizer.energy_threshold
-        self.speak("Калибровка завершена")
+        self.speak("Провожу калибровку микрофона. Пожалуйста, сохраняйте тишину несколько секунд.")
+        self.recognizer.adjust_for_ambient_noise(
+            source,
+            duration=self.ambient_adjust_duration
+        )
+        self.recognizer.energy_threshold = self.recognizer.energy_threshold * 1.3
+        self.initial_energy_threshold = self.recognizer.energy_threshold
+        self.energy_history.clear()
+        self.speak("Калибровка завершена. Готова к работе.")
 
     def run(self):
         """Основной цикл работы"""
@@ -246,17 +274,22 @@ class FridayAssistant:
             self.calibrate_microphone(source)
             
             try:
-                self.speak("Пятница активирована и готова к работе")
+                self.speak("Пятница активирована. Говорите 'Пятница' для активации.")
                 while not self.should_exit:
-                    if self.listen_for_trigger(source):
-                        self.wake_up()
-                    time.sleep(0.1)
+                    try:
+                        if self.listen_for_trigger(source):
+                            self.wake_up()
+                        time.sleep(0.05)
+                            
+                    except Exception as e:
+                        print(f"Ошибка в основном цикле: {e}")
+                        self.calibrate_microphone(source)
                         
             except KeyboardInterrupt:
                 self.speak("Завершение работы")
             except Exception as e:
                 print(f"Критическая ошибка: {e}")
-                self.speak("Произошла системная ошибка")
+                self.speak("Произошла системная ошибка. Попробуйте перезапустить меня.")
 
 if __name__ == '__main__':
     assistant = FridayAssistant()
