@@ -13,6 +13,11 @@ import random
 import sys
 import io
 import webbrowser
+from pytube import YouTube
+from pygame import mixer
+import time
+from yandex_music import Client
+import client_yandex
 
 # Настройка кодировки для Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -41,9 +46,14 @@ class FridayAssistant:
         self.music_apps = {
             'default': os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk',
             'spotify': os.path.expanduser('~') + r'\AppData\Roaming\Spotify\Spotify.exe',
-            'yandex': r'C:\Program Files\Windows Media Player\wmplayer.exe'
+            'yandex': r'C:\Program Files\Windows Media Player\wmplayer.exe',
         }
         
+        self.app_paths = {
+            'steam': r'C:\Program Files (x86)\Steam\steam.exe',
+            'telegram': os.path.expanduser('~') + r'\AppData\Roaming\Telegram Desktop\Telegram.exe'
+}
+
         self.weapon_url = "https://yandex.ru/pogoda/"
 
         # Состояние
@@ -54,6 +64,68 @@ class FridayAssistant:
             'пятница', 'пятницу', 'пятнича', 'пятничка',
             'friday', 'фрайди', 'эй пятница', 'привет пятница'
         ]
+
+        self.youtube_base_url = "https://www.youtube.com/results?search_query="
+        self.youtube_cache = {}
+
+        self.yandex_music_client = None
+        self.init_yandex_music()
+
+
+    def init_yandex_music(self):
+        try:
+            self.yandex_music_client = Client("YOUR_YANDEX_MUSIC_TOKEN").init()
+        except Exception as e:
+            print(f"Ошибка авторизации Яндекс.Музыки:{e}")
+
+    def play_in_yandex_music(self, query):
+        try:
+            if not self.yandex_music_client:
+                self.speak("Ошибка подключения к Яндекс.Музыке")
+                return
+        
+            search_result = self.yandex_music_client.search(query, type_="track")
+            if not search_result.tracks or not search_result.tracks.results:
+                self.speak("Трэк не найден")
+                return
+
+            track = search_result.tracks.results[0]
+            track_url = f"https://music.yandex.ru/track/{track.id}"
+            webbrowser.open(f"yandexmusic://track/{track.id}")
+            self.speak(f"Включаю {track.title} — {', '.join(a.name for a in track.artists)}")
+
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            self.speak("Не удалось включить песню")
+
+    def play_on_youtube(self, query):
+        """Поиск и воспроизведение музыки на YouTube"""
+        if query in self.youtube_cache:
+            webbrowser.open(self.youtube_cache[query])
+            self.speak("Включаю из кэша")
+            return
+        try:
+            from pytube import Search
+            import urllib.parse
+
+            s = Search(query)
+            if not s.results:
+                self.speak("ничего не найдено")
+                return
+
+            video_url = f"https://youtube.com/watch?v={s.results[0].video_id}"
+            webbrowser.open(video_url)
+            self.speak(f"включаю {s.results[0].title}")
+
+        except Exception as e:
+            print(f"Ошибка при поиске на YouTube: {e}")
+            search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+            webbrowser.open(search_url)
+            self.speak(f"Ищу {query} на Youtube")
+
+            
+
+            self.youtube_cache[query] = video_url
 
 
 
@@ -231,10 +303,28 @@ class FridayAssistant:
                 url = self.weather_url
 
             webbrowser.open(url)
-            self.speal(f"Открываю погоду {'в ' + location if location else ''}")
+            self.speak(f"Открываю погоду {'в ' + location if location else ''}")
         except Exception as e:
             print(f"Ошибка открытия погоды: {e}")
-            self.speak("Открываю")
+            self.speak("Не удалось открыть погоду")
+
+    def launch_app(self, app_name):
+        try:
+            if app_name in self.app_paths:
+                path = self.app_paths[app_name]
+                if os.path.exists(path):
+                    os.startfile(path)
+                    self.speak(f"Запускаю {app_name}")
+                    return True
+                else:
+                    self.speak(f"{app_name} не найден по указаному пути")
+                    return False
+                return False
+        except Exception as e:
+            print(f"Ошибка запуска {app_name}")
+            self.speak(f"Не удалось запустить {app_name}")
+            return False
+
 
     def process_command(self, command):
         """Обработка распознанных команд"""
@@ -263,6 +353,14 @@ class FridayAssistant:
             else:
                 self.start_music_player()
 
+        #steam
+        elif any(cmd in command for cmd in["запусти стим", "открой стим", "запусти steam"]):
+            if not self.launch_app('steam'):
+                self.speak("Steam не найден")
+        #Telegram
+        elif any(cmd in command for cmd in ["запусти телеграмм", "открой телеграмм", "открой telegram"]):
+            if not self.launch_app('telegram'):
+                self.speak("Telegram не найден")
 
         # Погода
         elif 'погода' in command:
@@ -273,6 +371,15 @@ class FridayAssistant:
                 location = command.split("погода")[1].strip()
 
             self.show_weather(location)
+
+
+        #Поиск музыки
+        elif any(cmd in command for cmd in["включи песню", "найди песню", "найди музыку", "включи музыку"]):
+            song_name = command.replace("включи песню", "").replace("найди песню", "").replace("найди музыку", "").replace("включи музыку", "").strip()
+            if song_name:
+                self.play_on_youtube(song_name)
+            else:
+                self.speak("Пожалуйста укажите название")
         
         # Калибровка
         elif "калибровка" in command:
