@@ -3,7 +3,6 @@ from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 import re
-import pyttsx3
 import time
 import os
 import subprocess
@@ -15,14 +14,15 @@ import io
 import webbrowser
 from pytube import YouTube
 from pygame import mixer
-import time
 from yandex_music import Client
-import client_yandex
 import urllib
+from gtts import gTTS
+import tempfile
+import pyautogui
+import keyboard
 
-
-token = ""
-client = Client(token).init()
+# Инициализация pygame mixer
+mixer.init()
 
 # Настройка кодировки для Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -37,7 +37,6 @@ class FridayAssistant:
         self.ambient_adjust_duration = 2
         
         # Инициализация компонентов
-        self.engine = self.init_tts()
         self.volume_control = self.init_volume()
         self.recognizer = sr.Recognizer()
         
@@ -57,9 +56,10 @@ class FridayAssistant:
         self.app_paths = {
             'steam': r'C:\Program Files (x86)\Steam\steam.exe',
             'telegram': os.path.expanduser('~') + r'\AppData\Roaming\Telegram Desktop\Telegram.exe'
-}
+        }
 
-        self.weapon_url = "https://yandex.ru/pogoda/"
+        self.weather_url = "https://yandex.ru/pogoda/"
+        self.yandex_music_path = os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk'
 
         # Состояние
         self.is_active = False
@@ -76,29 +76,61 @@ class FridayAssistant:
         self.yandex_music_client = None
         self.init_yandex_music()
 
-
     def init_yandex_music(self):
         try:
             self.yandex_music_client = Client("").init()
-            print("Яндекс.Музыка: аторизация успешна")
+            print("Яндекс.Музыка: авторизация успешна")
         except Exception as e:
-            print(f"Ошибка авторизации Яндекс.Музыки:{e}")
+            print(f"Ошибка авторизации Яндекс.Музыки: {e}")
+
+
+    def control_yandex_music(self, action):
+        try:
+            if not self.is_yandex_music_running():
+                os.startfile(self.yandex_music_path)
+                time.sleep(2)
+
+            if action == 'play_pause':
+                keyboard.press_and_release('play/pause media')
+                self.speak("Пауза" if self.is_music_playing() else "Продолжаю воспроизведение")
+            elif action == "next":
+                keyboard.press_and_release('next track')
+                self.speak("Следующий трек")
+            elif action == "previous":
+                keyboard.press_and_release('previous track')
+                self.speak("Предыдущий трек")
+            elif action == "stop":
+                keyboard.press_and_release('play/pause media')  # Остановка через паузу
+                self.speak("Остановлено")
+        except Exception as e:
+            print(f"Ошибка управления Яндекс Музыкой: {e}")
+            self.speak("Не удалось выполнить действие")
+
+    def is_yandex_music_running(self):
+        try:
+            output = subprocess.check_output('tacklist', shell=True).decode('cp866', 'ignore')
+            return 'Яндекс Музыка' in output
+        except:
+            return False
+
+    def is_music_playing(self):
+        return self.is_yandex_music_running()
+
+                    
 
     def play_in_yandex_music(self, query):
-
         try:
-            yandex_music_path = os.path.expanduser(
-                '~') + r'C:\Users\panas\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk'
+            yandex_music_path = os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk'
             
-
             if not self.yandex_music_client:
                 self.speak("Не удалось подключиться к Яндекс.Музыке")
                 return
 
-            os.startfile(yandex_music_path)
-            time.sleep(2)
+            if not self.is_yandex_music_running():
+                os.startfile(self.yandex_music_path)
+                time.sleep(2)
     
-        # Удаляем возможные лишние слова из запроса
+            # Удаляем возможные лишние слова из запроса
             clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку)', '', query, flags=re.IGNORECASE).strip()
         
             if not clean_query:
@@ -110,7 +142,6 @@ class FridayAssistant:
 
             self.speak(f"Ищу {clean_query} в Яндекс.Музыке...")
         
-
         except Exception as e:
             print(f"Ошибка: {e}")
             self.speak("Не удалось включить песню в Яндекс.Музыке")
@@ -134,17 +165,13 @@ class FridayAssistant:
             webbrowser.open(video_url)
             self.speak(f"включаю {s.results[0].title}")
 
+            self.youtube_cache[query] = video_url
+
         except Exception as e:
             print(f"Ошибка при поиске на YouTube: {e}")
             search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
             webbrowser.open(search_url)
             self.speak(f"Ищу {query} на Youtube")
-
-            
-
-            self.youtube_cache[query] = video_url
-
-
 
     def configure_recognizer(self):
         """Настройка параметров распознавания речи"""
@@ -154,13 +181,6 @@ class FridayAssistant:
         self.recognizer.non_speaking_duration = 0.3
         self.recognizer.energy_threshold = self.initial_energy_threshold
 
-    def init_tts(self):
-        """Инициализация синтезатора речи"""
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 160)
-        engine.setProperty('volume', 0.9)
-        return engine
-
     def init_volume(self):
         """Инициализация контроля громкости"""
         devices = AudioUtilities.GetSpeakers()
@@ -168,10 +188,32 @@ class FridayAssistant:
         return cast(interface, POINTER(IAudioEndpointVolume))
 
     def speak(self, text):
-        """Произнесение текста с выводом в консоль"""
+        """Произнесение текста с использованием Google TTS и pygame.mixer"""
         print(f"[Пятница]: {text}")
-        self.engine.say(text)
-        self.engine.runAndWait()
+        try:
+            # Создаем временный файл для воспроизведения
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as fp:
+                temp_path = fp.name
+            
+            # Генерируем речь и сохраняем во временный файл
+            tts = gTTS(text=text, lang='ru')
+            tts.save(temp_path)
+            
+            # Загружаем и воспроизводим файл
+            mixer.music.load(temp_path)
+            mixer.music.play()
+            
+            # Ждем завершения воспроизведения
+            while mixer.music.get_busy():
+                time.sleep(0.1)
+            
+            # Удаляем временный файл
+            os.unlink(temp_path)
+            
+        except Exception as e:
+            print(f"Ошибка воспроизведения: {e}")
+            # Fallback - просто выводим текст в консоль
+            print(f"(Ошибка TTS): {text}")
 
     def calculate_audio_energy(self, audio_data):
         """Вычисление уровня звука"""
@@ -313,9 +355,9 @@ class FridayAssistant:
                 }
                 location_key = location.lower()
                 if location_key in location_mapping:
-                    url = f"{self.weapon_url}{location_mapping[location_key]}"
+                    url = f"{self.weather_url}{location_mapping[location_key]}"
                 else:
-                    url = f"{self.weapon_url}{location.lower().replace(' ', '-')}"
+                    url = f"{self.weather_url}{location.lower().replace(' ', '-')}"
             else:
                 url = self.weather_url
 
@@ -341,7 +383,6 @@ class FridayAssistant:
             print(f"Ошибка запуска {app_name}")
             self.speak(f"Не удалось запустить {app_name}")
             return False
-
 
     def process_command(self, command):
         """Обработка распознанных команд"""
@@ -370,6 +411,18 @@ class FridayAssistant:
             else:
                 self.start_music_player()
 
+        #Управление музыкой
+        elif any(cmd in command for cmd in ["пауза", "останови музыку", "приостанови музыку"]):
+            self.control_yandex_music("play_pause")
+        elif any(cmd in command for cmd in ["продолжить", "возобновить музыку"]):
+            self.control_yandex_music("play_pause")
+        elif any(cmd in command for cmd in ["следующий трек", "следующая песня", "дальше"]):
+            self.control_yandex_music("next")
+        elif any(cmd in command for cmd in ["предыдущий трек", "предыдущая песня", "назад"]):
+            self.control_yandex_music("previous")
+        elif any(cmd in command for cmd in ["останови музыку", "стоп"]):
+            self.control_yandex_music("stop")
+
         #steam
         elif any(cmd in command for cmd in["запусти стим", "открой стим", "запусти steam"]):
             if not self.launch_app('steam'):
@@ -388,7 +441,6 @@ class FridayAssistant:
                 location = command.split("погода")[1].strip()
 
             self.show_weather(location)
-
 
         #Поиск музыки
         elif "яндекс музыке" in command or "яндекс музыку" in command:
