@@ -18,6 +18,11 @@ from pygame import mixer
 import time
 from yandex_music import Client
 import client_yandex
+import urllib
+
+
+token = ""
+client = Client(token).init()
 
 # Настройка кодировки для Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -74,29 +79,41 @@ class FridayAssistant:
 
     def init_yandex_music(self):
         try:
-            self.yandex_music_client = Client("YOUR_YANDEX_MUSIC_TOKEN").init()
+            self.yandex_music_client = Client("").init()
+            print("Яндекс.Музыка: аторизация успешна")
         except Exception as e:
             print(f"Ошибка авторизации Яндекс.Музыки:{e}")
 
     def play_in_yandex_music(self, query):
+
         try:
+            yandex_music_path = os.path.expanduser(
+                '~') + r'C:\Users\panas\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk'
+            
+
             if not self.yandex_music_client:
-                self.speak("Ошибка подключения к Яндекс.Музыке")
-                return
-        
-            search_result = self.yandex_music_client.search(query, type_="track")
-            if not search_result.tracks or not search_result.tracks.results:
-                self.speak("Трэк не найден")
+                self.speak("Не удалось подключиться к Яндекс.Музыке")
                 return
 
-            track = search_result.tracks.results[0]
-            track_url = f"https://music.yandex.ru/track/{track.id}"
-            webbrowser.open(f"yandexmusic://track/{track.id}")
-            self.speak(f"Включаю {track.title} — {', '.join(a.name for a in track.artists)}")
+            os.startfile(yandex_music_path)
+            time.sleep(2)
+    
+        # Удаляем возможные лишние слова из запроса
+            clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку)', '', query, flags=re.IGNORECASE).strip()
+        
+            if not clean_query:
+                self.speak("Не услышала название песни")
+                return
+
+            search_url = f"yandexmusic://search?text={urllib.parse.quote(query)}"
+            webbrowser.open(search_url)
+
+            self.speak(f"Ищу {clean_query} в Яндекс.Музыке...")
+        
 
         except Exception as e:
             print(f"Ошибка: {e}")
-            self.speak("Не удалось включить песню")
+            self.speak("Не удалось включить песню в Яндекс.Музыке")
 
     def play_on_youtube(self, query):
         """Поиск и воспроизведение музыки на YouTube"""
@@ -374,12 +391,31 @@ class FridayAssistant:
 
 
         #Поиск музыки
-        elif any(cmd in command for cmd in["включи песню", "найди песню", "найди музыку", "включи музыку"]):
+        elif "яндекс музыке" in command or "яндекс музыку" in command:
+            try:
+                if "включи" in command:
+                    song_name = command.split("включи")[1].split("в яндекс музыке")[0].strip()
+                elif "найди" in command:
+                    song_name = command.split("найди")[1].split("в яндекс музыке")[0].strip()
+                else:
+                    song_name = command.split("в яндекс музыке")[0].strip()
+        
+                if song_name:
+                    self.play_in_yandex_music(song_name)
+                else:
+                    self.speak("Пожалуйста, назовите песню")
+            except Exception as e:
+                print(f"Ошибка обработки команды: {e}")
+                self.speak("Не удалось обработать команду")
+                
+        
+        elif any(cmd in command for cmd in ["включи песню", "найди песню", "найди музыку", "включи музыку"]):
             song_name = command.replace("включи песню", "").replace("найди песню", "").replace("найди музыку", "").replace("включи музыку", "").strip()
             if song_name:
                 self.play_on_youtube(song_name)
             else:
                 self.speak("Пожалуйста укажите название")
+
         
         # Калибровка
         elif "калибровка" in command:
