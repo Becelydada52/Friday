@@ -544,7 +544,7 @@ class FridayAssistant:
                 if "на" in command:
                     text_to_translate = command.split("на")[0].replace("переведи", "").strip()
                 else:
-                    text_to_translate = command.replace("переведи", "").replace("как сказать", "").strip()
+                    text_to_translate = command.replace("переведи", "").replace("как будет", "").strip()
 
                 if text_to_translate:
                     result = self.translate_text(text_to_translate, target_lang)
