@@ -24,6 +24,7 @@ import re
 from threading import Thread
 import pickle
 import hashlib
+from googletrans import Translator, LANGUAGES
 
 # Инициализация pygame mixer
 mixer.init()
@@ -84,6 +85,38 @@ class FridayAssistant:
         self.init_yandex_music()
 
         self.preload_common_phrases()
+
+        self.translator = Translator()
+        self.language_codes = {
+            'английский': 'en',
+            'русский': 'ru',
+            'французский': 'fr',
+            'немецкий': 'de',
+            'испанский': 'es',
+            'китайский': 'zh-cn',
+            'японский': 'ja'
+        }
+
+        self.activation_phrases.extend([
+            'переведи', 'перевод', 'как сказать'
+        ])
+
+
+    def translate_text(self, text, target_lang='ru'):
+        try:
+            lang_code = self.language_codes.get(target_lang, target_lang)
+            translation = self.translator.translate(text, dest=lang_code)
+
+            return{
+                'text': translation.text,
+                'pronunciation': getattr(translation, 'pronunciation', None),
+                'src_lang': LANGUAGES.get(translation.src, translation.src),
+                'dest_lang': LANGUAGES.get(lang_code, lang_code)
+            }
+
+        except Exception as e:
+            print(f"ошибка перевода: {e}")
+            return None
 
 
     def preload_common_phrases(self):
@@ -497,6 +530,37 @@ class FridayAssistant:
                 self.start_music_player('spotify')
             else:
                 self.start_music_player()
+
+
+        #переводчик
+        elif any(cmd in command for cmd in ["переведи", "перевод", "как сказать"]):
+            try:
+                target_lang = 'русский'
+                for lang in self.language_codes:
+                    if lang in command:
+                        target_lang = lang
+                        break
+
+                if "на" in command:
+                    text_to_translate = command.split("на")[0].replace("переведи", "").strip()
+                else:
+                    text_to_translate = command.replace("переведи", "").replace("как сказать", "").strip()
+
+                if text_to_translate:
+                    result = self.translate_text(text_to_translate, target_lang)
+
+                    if result:
+                        response = f"перевод на {target_lang}: {result['text']}"
+                        if result['pronunciation']:
+                            response += f"\nПроизношение: {result['pronunciation']}"
+                        self.async_speak(response)
+                    else:
+                        self.async_speak("Не удалось выполнить перевод")
+                else:
+                    self.async_speak("Пожалуйста укажите текст для перевода")
+            except Exception as e:
+                print(f"Ошибка обработки перевода: {e}")
+                self.async_speak("Произошла ошибка при переводе")                  
 
         #Управление музыкой
         elif any(cmd in command for cmd in ["пауза", "останови музыку", "приостанови музыку"]):
