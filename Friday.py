@@ -20,6 +20,10 @@ from gtts import gTTS
 import tempfile
 import pyautogui
 import keyboard
+import re
+from threading import Thread
+import pickle
+import hashlib
 
 # Инициализация pygame mixer
 mixer.init()
@@ -45,6 +49,9 @@ class FridayAssistant:
         
         # История для анализа звука
         self.energy_history = deque(maxlen=15)
+
+        self.tts_cache = {}
+        self.load_tts_cache()
         
         # Пути к приложениям
         self.music_apps = {
@@ -76,9 +83,55 @@ class FridayAssistant:
         self.yandex_music_client = None
         self.init_yandex_music()
 
+        self.preload_common_phrases()
+
+
+    def preload_common_phrases(self):
+        common_phrases = [
+            'Да, слушаю вас',
+            'Я здесь',
+            "Чем могу помочь",
+            "Готова помочь",
+            "Не расслышала команду",
+            "Не удалось выполнить действие",
+            "Пятница активирована",
+            "Выключаюсь"
+        ]
+        for phrase in common_phrases:
+            self.async_speak(phrase)
+
+    def load_tts_cache(self):
+        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.plk')
+        try:
+            if os.path.exists(cache_file):
+                with open(cache_file, "rb") as f:
+                    self.tts_cache = pickle.load(f)
+                print(f"Загружен кэш из TTS: {cache_file}")
+        except Exception as e:
+                print("Ошибка загрузки кэша: {e}")
+
+
+    def save_tts_cache(self):
+        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.pkl')
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(self.tts_cache, f)
+        except Exception as e:
+            print(f"Ошибка сохранения кэша TTS: {e}")
+
+    def get_tts_filename(self, text):
+        # Создаем хеш от текста для имени файла
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        return os.path.join(tempfile.gettempdir(), f'tts_{text_hash}.mp3')
+
+
     def init_yandex_music(self):
         try:
             self.yandex_music_client = Client("").init()
+
+            queues = self.yandex_music_client.queues_list()
+            if queues:
+                self.yandex_music_client.queue(queues[0].id)
             print("Яндекс.Музыка: авторизация успешна")
         except Exception as e:
             print(f"Ошибка авторизации Яндекс.Музыки: {e}")
@@ -86,25 +139,34 @@ class FridayAssistant:
 
     def control_yandex_music(self, action):
         try:
+            # Проверяем, запущено ли приложение
             if not self.is_yandex_music_running():
                 os.startfile(self.yandex_music_path)
-                time.sleep(2)
+                time.sleep(1) 
 
+
+            # Управление горячими клавишами
             if action == 'play_pause':
                 keyboard.press_and_release('play/pause media')
-                self.speak("Пауза" if self.is_music_playing() else "Продолжаю воспроизведение")
+                time.sleep(0.1)
+                status = "Пауза" if self.is_music_playing() else "Продолжаю"
+                self.async_speak(status)
+                
             elif action == "next":
                 keyboard.press_and_release('next track')
-                self.speak("Следующий трек")
+                self.async_speak("Следующий трек")
+                
             elif action == "previous":
                 keyboard.press_and_release('previous track')
-                self.speak("Предыдущий трек")
+                self.async_speak("Предыдущий трек")
+                
             elif action == "stop":
-                keyboard.press_and_release('play/pause media')  # Остановка через паузу
-                self.speak("Остановлено")
+                keyboard.press_and_release('play/pause media')
+                self.async_speak("Остановлено")
+                
         except Exception as e:
             print(f"Ошибка управления Яндекс Музыкой: {e}")
-            self.speak("Не удалось выполнить действие")
+            self.async_speak("Не удалось выполнить действие")
 
     def is_yandex_music_running(self):
         try:
@@ -120,37 +182,46 @@ class FridayAssistant:
 
     def play_in_yandex_music(self, query):
         try:
-            yandex_music_path = os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk'
-            
-            if not self.yandex_music_client:
-                self.speak("Не удалось подключиться к Яндекс.Музыке")
-                return
-
+        # Путь к Яндекс.Музыке
+            yandex_music_path = r"C:\Users\panas\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk"
+        
+        # Проверяем и запускаем приложение, если оно не запущено
             if not self.is_yandex_music_running():
-                os.startfile(self.yandex_music_path)
-                time.sleep(2)
-    
-            # Удаляем возможные лишние слова из запроса
-            clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку)', '', query, flags=re.IGNORECASE).strip()
+                os.startfile(yandex_music_path)
+                time.sleep(1)  # Даем приложению время на запуск
+        
+        # Очищаем запрос от лишних слов
+            clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку|в яндекс музыке)', '', 
+                           query, flags=re.IGNORECASE).strip()
         
             if not clean_query:
-                self.speak("Не услышала название песни")
+                self.async_speak("Не услышала название песни")
                 return
+        
 
-            search_url = f"yandexmusic://search?text={urllib.parse.quote(query)}"
-            webbrowser.open(search_url)
+        
 
-            self.speak(f"Ищу {clean_query} в Яндекс.Музыке...")
+        
+        # Даем время на обработку команды
+            time.sleep(0.5)
+        
+        # Нажимаем Enter для выбора первого результата
+            pyautogui.press('enter')
+        
+            self.async_speak(f"Ищу {clean_query} в Яндекс.Музыке...")
         
         except Exception as e:
             print(f"Ошибка: {e}")
-            self.speak("Не удалось включить песню в Яндекс.Музыке")
+            self.async_speak("Не удалось включить песню в Яндекс.Музыке")
+
+        
+    
 
     def play_on_youtube(self, query):
         """Поиск и воспроизведение музыки на YouTube"""
         if query in self.youtube_cache:
             webbrowser.open(self.youtube_cache[query])
-            self.speak("Включаю из кэша")
+            self.async_speak("Включаю из кэша")
             return
         try:
             from pytube import Search
@@ -158,12 +229,12 @@ class FridayAssistant:
 
             s = Search(query)
             if not s.results:
-                self.speak("ничего не найдено")
+                self.async_speak("ничего не найдено")
                 return
 
             video_url = f"https://youtube.com/watch?v={s.results[0].video_id}"
             webbrowser.open(video_url)
-            self.speak(f"включаю {s.results[0].title}")
+            self.async_speak(f"включаю {s.results[0].title}")
 
             self.youtube_cache[query] = video_url
 
@@ -171,14 +242,14 @@ class FridayAssistant:
             print(f"Ошибка при поиске на YouTube: {e}")
             search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
             webbrowser.open(search_url)
-            self.speak(f"Ищу {query} на Youtube")
+            self.async_speak(f"Ищу {query} на Youtube")
 
     def configure_recognizer(self):
         """Настройка параметров распознавания речи"""
         self.recognizer.dynamic_energy_threshold = False
         self.recognizer.pause_threshold = self.pause_threshold
         self.recognizer.phrase_threshold = self.phrase_threshold
-        self.recognizer.non_speaking_duration = 0.3
+        self.recognizer.non_speaking_duration = 0.2
         self.recognizer.energy_threshold = self.initial_energy_threshold
 
     def init_volume(self):
@@ -191,29 +262,32 @@ class FridayAssistant:
         """Произнесение текста с использованием Google TTS и pygame.mixer"""
         print(f"[Пятница]: {text}")
         try:
-            # Создаем временный файл для воспроизведения
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as fp:
-                temp_path = fp.name
-            
-            # Генерируем речь и сохраняем во временный файл
-            tts = gTTS(text=text, lang='ru')
-            tts.save(temp_path)
-            
-            # Загружаем и воспроизводим файл
-            mixer.music.load(temp_path)
-            mixer.music.play()
-            
-            # Ждем завершения воспроизведения
-            while mixer.music.get_busy():
-                time.sleep(0.1)
-            
-            # Удаляем временный файл
-            os.unlink(temp_path)
-            
+            cache_file = self.get_tts_filename(text)
+
+            if text in self.tts_cache and os.path.exists(self.tts_cache[text]):
+                mixer.music.load(self.tts_cache[text])
+                mixer.music.play()
+
+                while mixer.music.get_busy():
+                    time.sleep(0.1)
+            else:
+                
+                tts = gTTS(text=text, lang='ru')
+                tts.save(cache_file)
+
+                self.tts_cache[text] = cache_file
+                mixer.music.load(cache_file)
+                mixer.music.play()
+
+                while mixer.music.get_busy():
+                    time.sleep(0.1)
         except Exception as e:
             print(f"Ошибка воспроизведения: {e}")
-            # Fallback - просто выводим текст в консоль
             print(f"(Ошибка TTS): {text}")
+
+    def async_speak(self, text):
+        thread = Thread(target=self.speak, args=(text,))
+        thread.start()
 
     def calculate_audio_energy(self, audio_data):
         """Вычисление уровня звука"""
@@ -245,7 +319,7 @@ class FridayAssistant:
             
             audio = self.recognizer.listen(
                 source,
-                timeout=2,
+                timeout=1.5,
                 phrase_time_limit=3
             )
             
@@ -263,13 +337,13 @@ class FridayAssistant:
                 
                 if any(phrase in text for phrase in self.activation_phrases):
                     current_time = time.time()
-                    if current_time - self.last_activation > 3:
+                    if current_time - self.last_activation > 2:
                         self.last_activation = current_time
                         return True
                         
             except sr.UnknownValueError:
                 self.recognizer.energy_threshold = min(
-                    self.recognizer.energy_threshold * 1.2,
+                    self.recognizer.energy_threshold * 1.1,
                     6000
                 )
             except sr.RequestError as e:
@@ -277,7 +351,7 @@ class FridayAssistant:
                 
         except sr.WaitTimeoutError:
             self.recognizer.energy_threshold = max(
-                self.recognizer.energy_threshold * 0.9,
+                self.recognizer.energy_threshold * 0.95,
                 300
             )
             
@@ -286,7 +360,7 @@ class FridayAssistant:
     def wake_up(self):
         """Активация ассистента"""
         self.is_active = True
-        self.speak(random.choice([
+        self.async_speak(random.choice([
             "Да, слушаю вас",
             "Я здесь",
             "Чем могу помочь?",
@@ -301,18 +375,31 @@ class FridayAssistant:
                 print("[АКТИВНЫЙ РЕЖИМ]...")
                 audio = self.recognizer.listen(
                     source,
-                    timeout=5,
+                    timeout=3,
                     phrase_time_limit=5
                 )
                 command = self.recognizer.recognize_google(audio, language="ru-RU").lower()
                 self.process_command(command)
                 
             except sr.UnknownValueError:
-                self.speak("Не расслышала команду")
+                self.async_speak("Не расслышала команду")
             except Exception as e:
                 print(f"Ошибка: {e}")
             finally:
                 self.return_to_sleep()
+
+    def calculate(self, expression):
+        try:
+            cleaned_expr = re.sub(r'[^\d+\-*/.()]', '', expression)
+            if not cleaned_expr:
+                raise ValueError("Пустое выражение")
+
+            result = eval(cleaned_expr, {'__builtins__': None}, {})
+            self.async_speak(f"Результат: {result}")
+        except Exception as e:
+            print(f"Ошибка вычисления: {e}")
+            self.async_speak("Не удалось вычислить выражение")
+
 
     def start_music_player(self, player_name=None):
         """Запуск музыкального приложения"""
@@ -322,7 +409,7 @@ class FridayAssistant:
                 path = self.music_apps[app_name]
                 if os.path.exists(path):
                     os.startfile(path)
-                    self.speak(f"Запускаю {app_name}")
+                    self.async_speak(f"Запускаю {app_name}")
                     return
             
             commands = {
@@ -331,18 +418,18 @@ class FridayAssistant:
                 'yandex': 'start wmplayer'
             }
             subprocess.run(commands.get(app_name, commands['default']), shell=True)
-            self.speak(f"Запускаю {app_name}")
+            self.async_speak(f"Запускаю {app_name}")
             
         except Exception as e:
             print(f"Ошибка запуска плеера: {e}")
-            self.speak("Не удалось запустить музыку")
+            self.async_speak("Не удалось запустить музыку")
 
     def set_volume(self, level):
         """Установка уровня громкости"""
         try:
             vol = max(0.0, min(1.0, level/100.0))
             self.volume_control.SetMasterVolumeLevelScalar(vol, None)
-            self.speak(f"Громкость {int(level)}%")
+            self.async_speak(f"Громкость {int(level)}%")
         except Exception as e:
             print(f"Ошибка громкости: {e}")
 
@@ -362,10 +449,10 @@ class FridayAssistant:
                 url = self.weather_url
 
             webbrowser.open(url)
-            self.speak(f"Открываю погоду {'в ' + location if location else ''}")
+            self.async_speak(f"Открываю погоду {'в ' + location if location else ''}")
         except Exception as e:
             print(f"Ошибка открытия погоды: {e}")
-            self.speak("Не удалось открыть погоду")
+            self.async_speak("Не удалось открыть погоду")
 
     def launch_app(self, app_name):
         try:
@@ -373,15 +460,15 @@ class FridayAssistant:
                 path = self.app_paths[app_name]
                 if os.path.exists(path):
                     os.startfile(path)
-                    self.speak(f"Запускаю {app_name}")
+                    self.async_speak(f"Запускаю {app_name}")
                     return True
                 else:
-                    self.speak(f"{app_name} не найден по указаному пути")
+                    self.async_speak(f"{app_name} не найден по указаному пути")
                     return False
                 return False
         except Exception as e:
             print(f"Ошибка запуска {app_name}")
-            self.speak(f"Не удалось запустить {app_name}")
+            self.async_speak(f"Не удалось запустить {app_name}")
             return False
 
     def process_command(self, command):
@@ -426,11 +513,19 @@ class FridayAssistant:
         #steam
         elif any(cmd in command for cmd in["запусти стим", "открой стим", "запусти steam"]):
             if not self.launch_app('steam'):
-                self.speak("Steam не найден")
+                self.async_speak("Steam не найден")
         #Telegram
         elif any(cmd in command for cmd in ["запусти телеграмм", "открой телеграмм", "открой telegram"]):
             if not self.launch_app('telegram'):
-                self.speak("Telegram не найден")
+                self.async_speak("Telegram не найден")
+
+        #калькулятор
+        elif any(cmd in command for cmd in ["посчитай", "вычисли", "сколько будет", "калькулятор"]):
+            expr = command.replace("посчитай", "").replace("вычисли", "").replace("сколько будет", "").strip()
+            if expr:
+                self.calculate(expr)
+            else:
+                self.async_speak("Пожалуйста, назовите выражение для вычисления")
 
         # Погода
         elif 'погода' in command:
@@ -455,10 +550,10 @@ class FridayAssistant:
                 if song_name:
                     self.play_in_yandex_music(song_name)
                 else:
-                    self.speak("Пожалуйста, назовите песню")
+                    self.async_speak("Пожалуйста, назовите песню")
             except Exception as e:
                 print(f"Ошибка обработки команды: {e}")
-                self.speak("Не удалось обработать команду")
+                self.async_speak("Не удалось обработать команду")
                 
         
         elif any(cmd in command for cmd in ["включи песню", "найди песню", "найди музыку", "включи музыку"]):
@@ -466,7 +561,7 @@ class FridayAssistant:
             if song_name:
                 self.play_on_youtube(song_name)
             else:
-                self.speak("Пожалуйста укажите название")
+                self.async_speak("Пожалуйста укажите название")
 
         
         # Калибровка
@@ -476,12 +571,12 @@ class FridayAssistant:
         
         # Прочие команды
         elif "спасибо" in command:
-            self.speak("Всегда пожалуйста!")
+            self.async_speak("Всегда пожалуйста!")
         elif any(cmd in command for cmd in ["выход", "закройся"]):
             self.should_exit = True
-            self.speak("Выключаюсь")
+            self.async_speak("Выключаюсь")
         else:
-            self.speak("Не поняла команду")
+            self.async_speak("Не поняла команду")
 
     def return_to_sleep(self):
         """Возврат в режим ожидания"""
@@ -490,7 +585,7 @@ class FridayAssistant:
 
     def calibrate_microphone(self, source):
         """Калибровка микрофона"""
-        self.speak("Провожу калибровку микрофона.")
+        self.async_speak("Провожу калибровку микрофона.")
         self.recognizer.adjust_for_ambient_noise(
             source,
             duration=self.ambient_adjust_duration
@@ -525,4 +620,7 @@ class FridayAssistant:
 
 if __name__ == '__main__':
     assistant = FridayAssistant()
-    assistant.run()
+    try:
+        assistant.run()
+    finally:
+        assistant.save_tts_cache
