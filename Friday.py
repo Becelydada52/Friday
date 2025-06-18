@@ -84,7 +84,9 @@ class FridayAssistant:
         self.yandex_music_client = None
         self.init_yandex_music()
 
-        self.preload_common_phrases()
+        Thread(target=self.preload_common_phrases).start()
+
+        self.tts_volume = 0.5
 
         self.translator = Translator()
         self.language_codes = {
@@ -131,7 +133,15 @@ class FridayAssistant:
             "Выключаюсь"
         ]
         for phrase in common_phrases:
-            self.async_speak(phrase)
+            cache_file = self.get_tts_filename(phrase)
+            if not os.path.exists(cache_file):
+                try:
+                    tts = gTTS(text=phrase, lang='ru')
+                    tts.save(cache_file)
+                    self.tts_cache[phrase] = cache_file
+                except Exception as e:
+                    print(f"Ошибка предзагрузки '{phrase}': {e}")
+
 
     def load_tts_cache(self):
         cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.plk')
@@ -299,6 +309,7 @@ class FridayAssistant:
 
             if text in self.tts_cache and os.path.exists(self.tts_cache[text]):
                 mixer.music.load(self.tts_cache[text])
+                mixer.music.set_volume(self.tts_volume)
                 mixer.music.play()
 
                 while mixer.music.get_busy():
@@ -310,6 +321,7 @@ class FridayAssistant:
 
                 self.tts_cache[text] = cache_file
                 mixer.music.load(cache_file)
+                mixer.music.set_volume(self.tts_volume)
                 mixer.music.play()
 
                 while mixer.music.get_busy():
@@ -521,6 +533,21 @@ class FridayAssistant:
                 self.set_volume(0)
             elif "половина" in command:
                 self.set_volume(50)
+
+        #регулировка громкости ассистента
+        if any(cmd in command for cmd in ['говори тише', "уменьши громкость голоса"]):
+            self.tts_volume = max(0.1, self.tts_volume - 0.2)
+            self.async_speak(f"Громкость голоса установлена на {int(self.tts_volume * 100)}%")
+            return
+        elif any(cmd in command for cmd in ["говори громче", "увеличь громкость голоса"]):
+            self.tts_volume = min(1.0, self.tts_volume + 0.2)
+            self.async_speak(f"Громкость голоса установлена на {int(self.tts_volume * 100)}%")
+            return
+        elif any(cmd in command for cmd in ["громкость голоса", "какая громкость голоса"]):
+            self.async_speak(f"Текущая громкость голоса {int(self.tts_volume * 100)}%")
+            return
+
+    
         
         # Запуск музыки
         elif any(cmd in command for cmd in ["включи музыку", "запусти музыку"]):
