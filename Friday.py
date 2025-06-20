@@ -20,16 +20,12 @@ from gtts import gTTS
 import tempfile
 import pyautogui
 import keyboard
-import re
 from threading import Thread
 import pickle
 import hashlib
 from googletrans import Translator, LANGUAGES
 
-
 mixer.init()
-
-
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 class FridayAssistant:
@@ -44,17 +40,15 @@ class FridayAssistant:
         # Инициализация компонентов
         self.volume_control = self.init_volume()
         self.recognizer = sr.Recognizer()
-        
-        # Настройка распознавателя
         self.configure_recognizer()
-        
-        # История для анализа звука
         self.energy_history = deque(maxlen=15)
 
+        # TTS и кэш
         self.tts_cache = {}
         self.load_tts_cache()
-        self.tts_volume = 0.5  
-        
+        self.tts_volume = 0.5
+        self.load_knowledge()
+
         # Пути к приложениям
         self.music_apps = {
             'default': os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk',
@@ -83,10 +77,49 @@ class FridayAssistant:
         self.youtube_cache = {}
 
         self.yandex_music_client = None
+        self.yandex_music_token = ""
         self.init_yandex_music()
 
-        self.preload_common_phrases()
-
+        # Личностные настройки
+        self.personality = {
+            'name': 'Пятница',
+            'mood': 'neutral',  # neutral, happy, sad, excited
+            'verbosity': 'normal',  # concise, normal, detailed
+            'learning_mode': False
+        }
+        
+        # Эмоциональные реакции
+        self.responses = {
+            'greeting': {
+                'neutral': ["Да, слушаю вас", "Я здесь"],
+                'happy': ["Рада вас слышать!", "Привет! Чем могу помочь?"],
+                'sad': ["Да...", "Слушаю..."]
+            },
+            'error': {
+                'neutral': ["Не удалось выполнить действие"],
+                'happy': ["Ой, что-то пошло не так, давайте попробуем еще раз!"],
+                'sad': ["Не получилось... Извините..."]
+            },
+            'farewell': {
+                'neutral': ["Выключаюсь"],
+                'happy': ["До скорой встречи!"],
+                'sad': ["Пока..."]
+            }
+        }
+        
+        # История разговоров и база знаний
+        self.conversation_history = deque(maxlen=10)
+        self.knowledge_base = {
+            'user_preferences': {},
+            'learned_commands': {},
+            'facts': {},
+            'jokes': [
+                "Почему программист всегда холодный? Потому что у него windows открыты!",
+                "Что сказал один байт другому? Будем битами!"
+            ]
+        }
+        
+        # Переводчик
         self.translator = Translator()
         self.language_codes = {
             'английский': 'en',
@@ -98,221 +131,11 @@ class FridayAssistant:
             'японский': 'ja'
         }
 
-        self.activation_phrases.extend([
-            'переведи', 'перевод', 'как сказать'
-        ])
+        self.activation_phrases.extend(['переведи', 'перевод', 'как сказать'])
+        self.setup_learned_commands()
+        self.preload_common_phrases()
 
-    def translate_text(self, text, target_lang='ru'):
-        try:
-            lang_code = self.language_codes.get(target_lang, target_lang)
-            translation = self.translator.translate(text, dest=lang_code)
-
-            return {
-                'text': translation.text,
-                'pronunciation': getattr(translation, 'pronunciation', None),
-                'src_lang': LANGUAGES.get(translation.src, translation.src),
-                'dest_lang': LANGUAGES.get(lang_code, lang_code)
-            }
-
-        except Exception as e:
-            print(f"ошибка перевода: {e}")
-            return None
-
-    def preload_common_phrases(self):
-        common_phrases = [
-            'Да, слушаю вас',
-            'Я здесь',
-            "Чем могу помочь",
-            "Готова помочь",
-            "Не расслышала команду",
-            "Не удалось выполнить действие",
-            "Пятница активирована",
-            "Выключаюсь"
-        ]
-        for phrase in common_phrases:
-            cache_file = self.get_tts_filename(phrase)
-            if not os.path.exists(cache_file):
-                try:
-                    tts = gTTS(text=phrase, lang='ru')
-                    tts.save(cache_file)
-                    self.tts_cache[phrase] = cache_file
-                except Exception as e:
-                    print(f"Ошибка предзагрузки фразы '{phrase}': {e}")
-
-    def load_tts_cache(self):
-        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.pkl')
-        try:
-            if os.path.exists(cache_file):
-                with open(cache_file, "rb") as f:
-                    self.tts_cache = pickle.load(f)
-                print(f"Загружен кэш из TTS: {cache_file}")
-        except Exception as e:
-            print(f"Ошибка загрузки кэша: {e}")
-
-    def save_tts_cache(self):
-        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.pkl')
-        try:
-            with open(cache_file, 'wb') as f:
-                pickle.dump(self.tts_cache, f)
-        except Exception as e:
-            print(f"Ошибка сохранения кэша TTS: {e}")
-
-    def get_tts_filename(self, text):
-        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
-        return os.path.join(tempfile.gettempdir(), f'tts_{text_hash}.mp3')
-
-    def init_yandex_music(self):
-        try:
-            self.yandex_music_client = Client("").init()
-            queues = self.yandex_music_client.queues_list()
-            if queues:
-                self.yandex_music_client.queue(queues[0].id)
-            print("Яндекс.Музыка: авторизация успешна")
-        except Exception as e:
-            print(f"Ошибка авторизации Яндекс.Музыки: {e}")
-
-    def get_playback_state(self):
-        try:
-            if not self.yandex_music_client:
-                return None
-        
-            queues = self.yandex_music_client.queues_list()
-            if not queues:
-                return None
-            
-            queue = self.yandex_music_client.queue(queues[0].id)
-            return queue.get_current_track()
-        except Exception as e:
-            print(f"Ошибка получения состояния: {e}")
-            return None
-
-    def control_yandex_music(self, action):
-        try:
-        # Проверяем авторизацию
-            if not self.yandex_music_client:
-                self.init_yandex_music()
-            
-
-            if not self.yandex_music_client:
-                return self.fallback_music_control(action)
-            
-            current_track = self.get_playback_state()
-        
-            if action == 'play_pause':
-                if current_track and current_track['is_playing']:
-                    self.yandex_music_client.play_pause()
-                    self.async_speak("Пауза")
-                else:
-                    self.yandex_music_client.play_pause()
-                    self.async_speak("Продолжаю")
-                return True
-            
-            elif action == "next":
-                self.yandex_music_client.next_track()
-                self.async_speak("Следующий трек")
-                return True
-            
-            elif action == "previous":
-                self.yandex_music_client.previous_track()
-                self.async_speak("Предыдущий трек")
-                return True
-            
-            elif action == "stop":
-                self.yandex_music_client.pause()
-                self.async_speak("Остановлено")
-                return True
-            
-        except Exception as e:
-            print(f"Ошибка управления Яндекс Музыкой: {e}")
-            return self.fallback_music_control(action)
-
-    def fallback_music_control(self, action):
-        try:
-            if not self.is_yandex_music_running():
-                os.startfile(self.yandex_music_path)
-                time.sleep(2)
-
-            if action == 'play_pause':
-                keyboard.press_and_release('play/pause media')
-                self.async_speak("Управляю музыкой")
-            elif action == "next":
-                keyboard.press_and_release('next track')
-                self.async_speak("Следующий трек")
-            elif action == "previous":
-                keyboard.press_and_release('previous track')
-                self.async_speak("Предыдущий трек")
-            elif action == "stop":
-                keyboard.press_and_release('play/pause media')
-                self.async_speak("Остановлено")
-            return True
-        except Exception as e:
-            print(f"Ошибка резервного управления: {e}")
-            self.async_speak("Не удалось управлять музыкой")
-            return False
-
-    def is_yandex_music_running(self):
-        try:
-            output = subprocess.check_output('tasklist', shell=True).decode('cp866', 'ignore')
-            return 'Яндекс Музыка' in output
-        except:
-            return False
-
-    def is_music_playing(self):
-        return self.is_yandex_music_running()
-
-    def play_in_yandex_music(self, query):
-        try:
-            yandex_music_path = r"C:\Users\panas\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk"
-        
-            if not self.is_yandex_music_running():
-                os.startfile(yandex_music_path)
-                time.sleep(1)
-        
-            clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку|в яндекс музыке)', '', 
-                           query, flags=re.IGNORECASE).strip()
-        
-            if not clean_query:
-                self.async_speak("Не услышала название песни")
-                return False
-        
-            time.sleep(0.5)
-            pyautogui.press('enter')
-            self.async_speak(f"Ищу {clean_query} в Яндекс.Музыке...")
-            return True
-        
-        except Exception as e:
-            print(f"Ошибка: {e}")
-            self.async_speak("Не удалось включить песню в Яндекс.Музыке")
-            return False
-
-    def play_on_youtube(self, query):
-        if query in self.youtube_cache:
-            webbrowser.open(self.youtube_cache[query])
-            self.async_speak("Включаю из кэша")
-            return True
-        try:
-            from pytube import Search
-            import urllib.parse
-
-            s = Search(query)
-            if not s.results:
-                self.async_speak("ничего не найдено")
-                return False
-
-            video_url = f"https://youtube.com/watch?v={s.results[0].video_id}"
-            webbrowser.open(video_url)
-            self.async_speak(f"включаю {s.results[0].title}")
-
-            self.youtube_cache[query] = video_url
-            return True
-
-        except Exception as e:
-            print(f"Ошибка при поиске на YouTube: {e}")
-            search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-            webbrowser.open(search_url)
-            self.async_speak(f"Ищу {query} на Youtube")
-            return False
-
+    # ========== Базовые функции ==========
     def configure_recognizer(self):
         self.recognizer.dynamic_energy_threshold = False
         self.recognizer.pause_threshold = self.pause_threshold
@@ -325,8 +148,154 @@ class FridayAssistant:
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(interface, POINTER(IAudioEndpointVolume))
 
+    # ========== Функции личности ==========
+    def get_response(self, response_type):
+        """Получить ответ с учетом текущего настроения"""
+        mood_responses = self.responses.get(response_type, {}).get(self.personality['mood'], [])
+        default_responses = self.responses.get(response_type, {}).get('neutral', ["..."])
+        return random.choice(mood_responses if mood_responses else default_responses)
+
+    def adjust_personality(self):
+        """Адаптировать личность на основе истории взаимодействий"""
+        recent_interactions = [i for i in list(self.conversation_history)[-5:] if isinstance(i, dict)]
+        
+        if recent_interactions:
+            success_rate = sum(1 for i in recent_interactions if i.get('success', False)) / len(recent_interactions)
+            avg_length = sum(len(i.get('command', '')) for i in recent_interactions) / len(recent_interactions)
+            
+            if success_rate > 0.8:
+                self.personality['mood'] = 'happy'
+            elif success_rate < 0.3:
+                self.personality['mood'] = 'sad'
+            else:
+                self.personality['mood'] = 'neutral'
+                
+            if avg_length > 30:
+                self.personality['verbosity'] = 'detailed'
+            elif avg_length < 15:
+                self.personality['verbosity'] = 'concise'
+            else:
+                self.personality['verbosity'] = 'normal'
+
+    # ========== Функции обучения ==========
+    def setup_learned_commands(self):
+        """Настройка изученных команд"""
+        self.learn_command(
+            r'запомни что (.*) это (.*)',
+            self._learn_fact_command,
+            "Запоминание фактов: 'запомни что Земля это планета'"
+        )
+        
+        self.learn_command(
+            r'(какое|какой|что такое) (.*)\?',
+            self._recall_fact_command,
+            "Вспомнить факт: 'какое небо?'"
+        )
+        
+        self.learn_command(
+            r'(расскажи шутку|пошути|рассмеши меня)',
+            self._tell_joke_command,
+            "Рассказать шутку"
+        )
+        
+        self.learn_command(
+            r'(как тебя зовут|твое имя)',
+            self._tell_name_command,
+            "Представиться"
+        )
+
+    def learn_command(self, command_pattern, action_func, description=""):
+        """Добавить новую команду в базу знаний"""
+        command_id = hashlib.md5(command_pattern.encode()).hexdigest()
+        self.knowledge_base['learned_commands'][command_id] = {
+            'pattern': command_pattern,
+            'action': action_func,
+            'description': description,
+            'usage_count': 0
+        }
+        self.save_knowledge()
+
+    def learn_from_interaction(self, command, success):
+        """Анализировать взаимодействие и учиться"""
+        clean_command = re.sub(r'\b(пожалуйста|сейчас|мне|можно|бы|ли)\b', '', command, flags=re.IGNORECASE).strip()
+        
+        # Если команда не была обработана, предложить обучение
+        if not success and self.personality['learning_mode']:
+            self.async_speak("Я не знаю как ответить на это. Не могли бы вы научить меня?")
+            # Здесь можно добавить логику для обучения новым командам
+            
+        # Сохраняем историю взаимодействий
+        self.conversation_history.append({
+            'command': command,
+            'success': success,
+            'timestamp': time.time()
+        })
+        
+        self.adjust_personality()
+
+    def save_knowledge(self):
+        """Сохранить базу знаний на диск"""
+        try:
+            with open('friday_knowledge.pkl', 'wb') as f:
+                pickle.dump(self.knowledge_base, f)
+        except Exception as e:
+            print(f"Ошибка сохранения знаний: {e}")
+
+    def load_knowledge(self):
+        """Загрузить базу знаний с диска"""
+        try:
+            if os.path.exists('friday_knowledge.pkl'):
+                with open('friday_knowledge.pkl', 'rb') as f:
+                    self.knowledge_base = pickle.load(f)
+        except Exception as e:
+            print(f"Ошибка загрузки знаний: {e}")
+
+    # ========== Обработчики изученных команд ==========
+    def _learn_fact_command(self, command):
+        """Обработчик для запоминания фактов"""
+        match = re.match(r'запомни что (.*) это (.*)', command, re.IGNORECASE)
+        if match:
+            key, value = match.groups()
+            self.knowledge_base['facts'][key.strip().lower()] = value.strip()
+            self.save_knowledge()
+            self.async_speak(f"Запомнила: {key} это {value}")
+            return True
+        return False
+        
+    def _recall_fact_command(self, command):
+        """Обработчик для вспоминания фактов"""
+        match = re.match(r'(какое|какой|что такое) (.*)\?', command, re.IGNORECASE)
+        if match:
+            item = match.group(2).strip().lower()
+            if item in self.knowledge_base['facts']:
+                self.async_speak(f"{item.capitalize()} это {self.knowledge_base['facts'][item]}")
+            else:
+                self.async_speak(f"Я не знаю что такое {item}")
+            return True
+        return False
+
+    def _tell_joke_command(self, command):
+        """Обработчик для рассказа шуток"""
+        if self.knowledge_base['jokes']:
+            joke = random.choice(self.knowledge_base['jokes'])
+            self.async_speak(joke)
+            return True
+        self.async_speak("Я пока не знаю шуток. Научите меня!")
+        return False
+
+    def _tell_name_command(self, command):
+        """Обработчик для представления"""
+        moods = {
+            'happy': f"Меня зовут {self.personality['name']}! Рада познакомиться!",
+            'sad': f"{self.personality['name']}...",
+            'neutral': f"Меня зовут {self.personality['name']}."
+        }
+        self.async_speak(moods.get(self.personality['mood'], moods['neutral']))
+        return True
+
+    # ========== Основные функции ассистента ==========
     def speak(self, text):
-        print(f"[Пятница]: {text}")
+        print(f"[{self.personality['name']}]: {text}")
         try:
             cache_file = self.get_tts_filename(text)
 
@@ -423,12 +392,7 @@ class FridayAssistant:
 
     def wake_up(self):
         self.is_active = True
-        self.async_speak(random.choice([
-            "Да, слушаю вас",
-            "Я здесь",
-            "Чем могу помочь?",
-            "Готова помочь"
-        ]))
+        self.async_speak(self.get_response('greeting'))
         Thread(target=self.active_listening).start()
 
     def active_listening(self):
@@ -453,12 +417,29 @@ class FridayAssistant:
                         self.return_to_sleep()
                 
                 except sr.UnknownValueError:
-                    self.async_speak("Не расслышала команду, повторите пожалуйста")
+                    self.async_speak(self.get_response('error'))
                     continue
                 except Exception as e:
                     print(f"Ошибка: {e}")
-                    self.async_speak("Произошла ошибка, попробуйте еще раз")
+                    self.async_speak(self.get_response('error'))
 
+    def return_to_sleep(self):
+        if self.is_active:
+            self.is_active = False
+            print("Возврат в режим ожидания...")
+
+    def calibrate_microphone(self, source):
+        self.async_speak("Провожу калибровку микрофона.")
+        self.recognizer.adjust_for_ambient_noise(
+            source,
+            duration=self.ambient_adjust_duration
+        )
+        self.recognizer.energy_threshold = self.recognizer.energy_threshold * 1.3
+        self.initial_energy_threshold = self.recognizer.energy_threshold
+        self.energy_history.clear()
+        self.speak("Калибровка завершена. Готова к работе.")
+
+    # ========== Функции приложений ==========
     def calculate(self, expression):
         try:
             cleaned_expr = re.sub(r'[^\d+\-*/.()]', '', expression)
@@ -546,12 +527,255 @@ class FridayAssistant:
             self.async_speak(f"Не удалось запустить {app_name}")
             return False
 
+    def control_yandex_music(self, action):
+        """Управление музыкой с автоматическим fallback"""
+        # Если есть клиент Яндекс.Музыки, пробуем использовать его
+        if self.yandex_music_client:
+            try:
+                playback_state = self.get_playback_state()
+            
+                if action == 'play_pause':
+                    if playback_state and playback_state['is_playing']:
+                        self.yandex_music_client.play_pause()
+                        self.async_speak("Пауза")
+                    else:
+                        self.yandex_music_client.play_pause()
+                        self.async_speak("Продолжаю")
+                    return True
+                
+                elif action == "next":
+                    self.yandex_music_client.next_track()
+                    self.async_speak("Следующий трек")
+                    return True
+                
+                elif action == "previous":
+                    self.yandex_music_client.previous_track()
+                    self.async_speak("Предыдущий трек")
+                    return True
+                
+                elif action == "stop":
+                    self.yandex_music_client.pause()
+                    self.async_speak("Остановлено")
+                    return True
+                
+            except Exception as e:
+                print(f"Ошибка управления Яндекс Музыкой: {e}")
+
+                return self.fallback_music_control(action)
+        
+        return self.fallback_music_control(action)
+        
+    def init_yandex_music(self):
+        """Инициализация клиента Яндекс.Музыки с проверкой токена"""
+        if not self.yandex_music_token:
+            print("Токен Яндекс.Музыки не указан, используется fallback-режим")
+            self.yandex_music_client = None
+            return False
+            
+        try:
+            self.yandex_music_client = Client(self.yandex_music_token).init()
+            print("Яндекс.Музыка: авторизация успешна")
+            return True
+        except Exception as e:
+            print(f"Ошибка авторизации Яндекс.Музыки: {e}")
+            self.yandex_music_client = None
+            return False
+    def get_playback_state(self):
+        try:
+            if not self.yandex_music_client:
+                return None
+
+            queues = self.yandex_music_client.queues_list()
+            if not queues:
+                return None
+            
+            queue = self.yandex_music_client.queue(queues[0].id)
+            current_track = queue.get_current_track()
+            return {
+                'is_playing': queue.get_playing_state(),
+                'track': current_track,
+                'track_title': f"{current_track['title']} - {current_track['artists'][0]['name']}" if current_track else None
+            }
+        except Exception as e:
+            print(f"Ошибка получения состояния: {e}")
+            return None
+
+    def fallback_music_control(self, action):
+        try:
+            if not self.is_yandex_music_running():
+                os.startfile(self.yandex_music_path)
+                time.sleep(2)
+
+            if action == 'play_pause':
+                keyboard.press_and_release('play/pause media')
+                self.async_speak("Управляю музыкой")
+            elif action == "next":
+                keyboard.press_and_release('next track')
+                self.async_speak("Следующий трек")
+            elif action == "previous":
+                keyboard.press_and_release('previous track')
+                self.async_speak("Предыдущий трек")
+            elif action == "stop":
+                keyboard.press_and_release('play/pause media')
+                self.async_speak("Остановлено")
+            return True
+        except Exception as e:
+            print(f"Ошибка резервного управления: {e}")
+            self.async_speak("Не удалось управлять музыкой")
+            return False
+
+
+    def fallback_play_music(self, query):
+        """Fallback реализация для воспроизведения музыки"""
+        self.async_speak("Использую резервный метод воспроизведения")
+        return self.play_on_youtube(query)
+
+    def is_yandex_music_running(self):
+        try:
+            output = subprocess.check_output('tasklist', shell=True).decode('cp866', 'ignore')
+            return 'Яндекс Музыка' in output
+        except:
+            return False
+
+    def play_in_yandex_music(self, query):
+        """Поиск музыки с автоматическим fallback"""
+        # Если нет клиента Яндекс.Музыки, используем fallback
+        if not self.yandex_music_client:
+            return self.fallback_play_music(query)
+            
+        try:
+            if not self.is_yandex_music_running():
+                os.startfile(self.yandex_music_path)
+                time.sleep(1)
+        
+            clean_query = re.sub(r'(пожалуйста|включи|найди|песню|трек|музыку|в яндекс музыке)', '', 
+                           query, flags=re.IGNORECASE).strip()
+        
+            if not clean_query:
+                self.async_speak("Не услышала название песни")
+                return False
+        
+            time.sleep(0.5)
+            pyautogui.press('enter')
+            self.async_speak(f"Ищу {clean_query} в Яндекс.Музыке...")
+            return True
+        
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            return self.fallback_play_music(query)
+
+    def play_on_youtube(self, query):
+        if query in self.youtube_cache:
+            webbrowser.open(self.youtube_cache[query])
+            self.async_speak("Включаю из кэша")
+            return True
+        try:
+            from pytube import Search
+            import urllib.parse
+
+            s = Search(query)
+            if not s.results:
+                self.async_speak("ничего не найдено")
+                return False
+
+            video_url = f"https://youtube.com/watch?v={s.results[0].video_id}"
+            webbrowser.open(video_url)
+            self.async_speak(f"включаю {s.results[0].title}")
+
+            self.youtube_cache[query] = video_url
+            return True
+
+        except Exception as e:
+            print(f"Ошибка при поиске на YouTube: {e}")
+            search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+            webbrowser.open(search_url)
+            self.async_speak(f"Ищу {query} на Youtube")
+            return False
+
+    def translate_text(self, text, target_lang='ru'):
+        try:
+            lang_code = self.language_codes.get(target_lang, target_lang)
+            translation = self.translator.translate(text, dest=lang_code)
+
+            return {
+                'text': translation.text,
+                'pronunciation': getattr(translation, 'pronunciation', None),
+                'src_lang': LANGUAGES.get(translation.src, translation.src),
+                'dest_lang': LANGUAGES.get(lang_code, lang_code)
+            }
+
+        except Exception as e:
+            print(f"ошибка перевода: {e}")
+            return None
+
+    def get_tts_filename(self, text):
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        return os.path.join(tempfile.gettempdir(), f'tts_{text_hash}.mp3')
+
+    def preload_common_phrases(self):
+        common_phrases = [
+            'Да, слушаю вас',
+            'Я здесь',
+            "Чем могу помочь",
+            "Готова помочь",
+            "Не расслышала команду",
+            "Не удалось выполнить действие",
+            "Пятница активирована",
+            "Выключаюсь"
+        ]
+        for phrase in common_phrases:
+            cache_file = self.get_tts_filename(phrase)
+            if not os.path.exists(cache_file):
+                try:
+                    tts = gTTS(text=phrase, lang='ru')
+                    tts.save(cache_file)
+                    self.tts_cache[phrase] = cache_file
+                except Exception as e:
+                    print(f"Ошибка предзагрузки фразы '{phrase}': {e}")
+
+    def load_tts_cache(self):
+        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.pkl')
+        try:
+            if os.path.exists(cache_file):
+                with open(cache_file, "rb") as f:
+                    self.tts_cache = pickle.load(f)
+                print(f"Загружен кэш из TTS: {cache_file}")
+        except Exception as e:
+            print(f"Ошибка загрузки кэша: {e}")
+
+    def save_tts_cache(self):
+        cache_file = os.path.join(tempfile.gettempdir(), 'friday_tts_cache.pkl')
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(self.tts_cache, f)
+        except Exception as e:
+            print(f"Ошибка сохранения кэша TTS: {e}")
+
+    # ========== Обработка команд ==========
     def process_command(self, command):
         if not command:
             return False
             
         print(f"Обработка команды: {command}")
         
+        # Сначала проверяем изученные команды
+        for cmd_id, cmd_data in self.knowledge_base['learned_commands'].items():
+            if re.search(cmd_data['pattern'], command, re.IGNORECASE):
+                try:
+                    result = cmd_data['action'](command)
+                    cmd_data['usage_count'] += 1
+                    self.learn_from_interaction(command, True)
+                    return result
+                except Exception as e:
+                    print(f"Ошибка выполнения изученной команды: {e}")
+        
+        # Затем стандартные команды
+        command_processed = self._process_builtin_command(command)
+        self.learn_from_interaction(command, command_processed)
+        return command_processed
+        
+    def _process_builtin_command(self, command):
+        """Обработка встроенных команд"""
         # Управление громкостью
         if "громкость" in command:
             if num := re.search(r'\d+', command):
@@ -691,38 +915,25 @@ class FridayAssistant:
             return True
         elif any(cmd in command for cmd in ["выход", "закройся"]):
             self.should_exit = True
-            self.async_speak("Выключаюсь")
+            self.async_speak(self.get_response('farewell'))
             return True
         else:
             self.async_speak("Не поняла команду")
             return False
-
-    def return_to_sleep(self):
-        if self.is_active:
-            self.is_active = False
-            print("Возврат в режим ожидания...")
-
-    def calibrate_microphone(self, source):
-        self.async_speak("Провожу калибровку микрофона.")
-        self.recognizer.adjust_for_ambient_noise(
-            source,
-            duration=self.ambient_adjust_duration
-        )
-        self.recognizer.energy_threshold = self.recognizer.energy_threshold * 1.3
-        self.initial_energy_threshold = self.recognizer.energy_threshold
-        self.energy_history.clear()
-        self.speak("Калибровка завершена. Готова к работе.")
 
     def run(self):
         with sr.Microphone() as source:
             self.calibrate_microphone(source)
             
             try:
-                self.speak("Пятница активирована.")
+                self.async_speak(self.get_response('greeting'))
+                
                 while not self.should_exit:
                     try:
                         if not self.is_active and self.listen_for_trigger(source):
                             self.wake_up()
+                            self.adjust_personality()
+                            
                         time.sleep(0.05)
                             
                     except Exception as e:
@@ -730,10 +941,13 @@ class FridayAssistant:
                         self.calibrate_microphone(source)
                         
             except KeyboardInterrupt:
-                self.speak("Завершение работы")
+                self.speak(self.get_response('farewell'))
             except Exception as e:
                 print(f"Критическая ошибка: {e}")
                 self.speak("Произошла системная ошибка. Попробуйте перезапустить меня.")
+            finally:
+                self.save_tts_cache()
+                self.save_knowledge()
 
 if __name__ == '__main__':
     assistant = FridayAssistant()
@@ -741,3 +955,4 @@ if __name__ == '__main__':
         assistant.run()
     finally:
         assistant.save_tts_cache()
+        assistant.save_knowledge()
