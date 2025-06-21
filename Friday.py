@@ -488,6 +488,35 @@ class FridayAssistant:
             print(f"Ошибка громкости: {e}")
             return False
 
+    def set_voice_volume(self, level):
+        try:
+            level = max(0, min(100, level))
+            self.tts_volume = level / 100
+
+            response = f"Громкость голоса установлена на {level}%"
+            self.async_speak(response)
+            return True
+        except Exception as e:
+            print(f"Ошибка установки уровня громкости голоса: {e}")
+            self.async_speak("Не удалось изменить громкость голоса")
+            return False
+
+
+    def adjust_voice_volume(self, direction):
+        try:
+            step = 20
+            current = int(self.tts_volume * 100)
+
+            if direction == "up":
+                new_level = min(100, current + step)
+            else:
+                new_level = max(0, current - step)
+
+            return self.set_voice_volume(new_level)
+        except Exception as e:
+            print(f"Ошибка регулировки громкости: {e}")
+            return False            
+
     def show_weather(self, location=None):
         try:
             if location:
@@ -777,7 +806,9 @@ class FridayAssistant:
     def _process_builtin_command(self, command):
         """Обработка встроенных команд"""
         # Управление громкостью
-        if "громкость" in command:
+
+        if "громкость" in command and not any(w in command for w in ['голоса', "речи", "голос"]):
+
             if num := re.search(r'\d+', command):
                 return self.set_volume(int(num.group()))
             elif "максимум" in command:
@@ -786,6 +817,27 @@ class FridayAssistant:
                 return self.set_volume(0)
             elif "половина" in command:
                 return self.set_volume(50)
+
+
+        elif any(phrase in command for phrase in ["громкость голоса", "громкость речи", "голос на", "речь на"]):
+            if num := re.search(r'\d+', command):
+                return self.set_voice_volume(int(num.group()))
+            elif "максимум" in command:
+                return self.set_voice_volume(100)
+            elif "минимум" in command:
+                return self.set_voice_volume(0)
+            elif "половина" in command:
+                return self.set_voice_volume(50)
+            else:
+                self.async_speak("Пожалуйста, укажите уровень громкости в процентах")
+                return False
+                
+        # Регулировка громкости голоса
+        elif any(phrase in command for phrase in ["громче голос", "громче речь", "сделай голос громче", "говори громче"]):
+            return self.adjust_voice_volume("up")
+            
+        elif any(phrase in command for phrase in ["тише голос", "тише речь", "сделай голос тише", "говори тише"]):
+            return self.adjust_voice_volume("down")
         
         # Запуск музыки
         elif any(cmd in command for cmd in ["включи музыку", "запусти музыку"]):
