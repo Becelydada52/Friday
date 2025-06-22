@@ -24,6 +24,7 @@ from threading import Thread
 import pickle
 import hashlib
 from googletrans import Translator, LANGUAGES
+import psutil
 
 mixer.init()
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -106,6 +107,17 @@ class FridayAssistant:
                 'sad': ["Пока..."]
             }
         }
+
+        self.app_name_mapping = {
+        'проводник': 'explorer',
+        'браузер': 'yandex',  
+        'телеграм': 'telegram',
+        'стим': 'steam',
+        'word': 'winword',
+        'excel': 'excel',
+        'дискорд': 'discord'
+    }
+        
         
         # История разговоров и база знаний
         self.conversation_history = deque(maxlen=10)
@@ -321,6 +333,16 @@ class FridayAssistant:
             print(f"Ошибка воспроизведения: {e}")
             print(f"(Ошибка TTS): {text}")
 
+    def get_running_apps(self):
+        running_apps = {}
+        for proc in psutil.process_iter(['name', 'pid', 'exe']):
+            try:
+                app_name = proc.info['name'].replace('exe', '').lower()
+                running_apps[app_name] = proc
+            except Exception as e:
+                continue
+        return running_apps
+
     def async_speak(self, text):
         thread = Thread(target=self.speak, args=(text,))
         thread.start()
@@ -453,6 +475,50 @@ class FridayAssistant:
             print(f"Ошибка вычисления: {e}")
             self.async_speak("Не удалось вычислить выражение")
             return False
+        
+    def handle_system_commands(self, command):
+    # Закрытие приложений
+        if any(cmd in command for cmd in ["закрой приложение", "заверши процесс", "закрой программу"]):
+            app_name = re.sub(r'(закрой|приложение|программу|процесс)', '', command, flags=re.IGNORECASE).strip()
+            if not app_name:
+                self.async_speak("Укажите название приложения, например: 'закрой приложение проводник'.")
+                return False
+            return self.close_app(app_name)
+    
+    # Список запущенных приложений
+        elif any(cmd in command for cmd in ["какие приложения открыты", "список программ"]):
+            running_apps = ", ".join(self.get_running_apps().keys())
+            self.async_speak(f"Запущены: {running_apps}")
+            return True
+    
+        return False
+        
+    def close_app(self, app_name):
+        if not app_name:
+            self.async_speak("Не услышала название приложения. Попробуйте ещё раз.")
+            return False
+
+        system_name = self.app_name_mapping.get(app_name.lower(), app_name.lower())
+        running_apps = self.get_running_apps()
+
+        if system_name not in running_apps:
+            similar = [name for name in running_apps if app_name.lower() in name]
+            if similar:
+                self.async_speak(f"Найдены похожие приложения: {', '.join(similar)}. Уточните название.")
+            else:
+                self.async_speak(f"Приложение '{app_name}' не найдено.")
+            return False
+
+        try:
+            proc = running_apps[system_name]
+            proc.kill()
+            self.async_speak(f"Закрываю {app_name}.")
+            return True
+        except Exception as e:
+            print(f"Ошибка закрытия {app_name}: {e}")
+            self.async_speak(f"Не удалось закрыть {app_name}.")
+            return False
+        
 
     def start_music_player(self, player_name=None):
         try:
@@ -893,6 +959,11 @@ class FridayAssistant:
             return self.control_yandex_music("previous")
         elif any(cmd in command for cmd in ["останови музыку", "стоп"]):
             return self.control_yandex_music("stop")
+        
+        if self.handle_system_commands(command):
+            return True
+        
+
 
         # Steam
         elif any(cmd in command for cmd in["запусти стим", "открой стим", "запусти steam"]):
