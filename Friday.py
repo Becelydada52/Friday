@@ -25,6 +25,11 @@ import pickle
 import hashlib
 from googletrans import Translator, LANGUAGES
 import psutil
+import pystray
+from PIL import Image
+import threading
+import keyboard
+from plyer import notification
 
 mixer.init()
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -80,6 +85,13 @@ class FridayAssistant:
         self.yandex_music_client = None
         self.yandex_music_token = ""
         self.init_yandex_music()
+
+
+        self.tray_icon = None
+        self.tray_thread = None
+        self.hotkey_thread = None
+        self.setup_tray_icon()
+        self.setup_hotkeys()
 
         # Личностные настройки
         self.personality = {
@@ -411,6 +423,43 @@ class FridayAssistant:
             )
             
         return False
+
+    def setup_tray_icon(self):
+        image = Image.new('RGB', (64, 64), 'black')
+        menu = (
+            pystray.MenuItem("Активировать", self.wake_up),
+            pystray.MenuItem("Настройки", self.open_settings),
+            pystray.MenuItem("Выход", self.exit_app),
+        )
+        self.tray_icon = pystray.Icon("Friday", image, "Friday Assistant", menu)
+        self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+        self.tray_thread.start()
+
+    def setup_hotkeys(self):
+        keyboard.add_hotkey('ctrl+alt+f', self.wake_up)
+        self.hotkey_thread = threading.Thread(target=keyboard.wait, daemon=True)
+        self.hotkey_thread.start()
+
+
+    def open_settings(self):
+        self.async_speak("Открываю настройки")    
+
+    def exit_app(self):
+        self.should_exit = True
+        self.tray_icon.stop()
+        self.async_speak("Выключаюсь. До свидания!")
+        sys.exit(0)
+
+    def show_notification(self, title, message):
+        try:
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="Friday Assistant",
+                timeout=5
+            )
+        except Exception as e:
+            print(f"Ошибка уведомления: {e}")
 
     def wake_up(self):
         self.is_active = True
@@ -1073,9 +1122,12 @@ class FridayAssistant:
                 self.save_knowledge()
 
 if __name__ == '__main__':
+
     assistant = FridayAssistant()
     try:
         assistant.run()
+    except KeyboardInterrupt:
+        assistant.exit_app()
     finally:
         assistant.save_tts_cache()
         assistant.save_knowledge()
