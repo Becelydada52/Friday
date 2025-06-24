@@ -19,7 +19,6 @@ import urllib
 from gtts import gTTS
 import tempfile
 import pyautogui
-import keyboard
 from threading import Thread
 import pickle
 import hashlib
@@ -30,6 +29,7 @@ from PIL import Image
 import threading
 import keyboard
 from plyer import notification
+import math
 
 mixer.init()
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -55,6 +55,8 @@ class FridayAssistant:
         self.tts_volume = 0.5
         self.load_knowledge()
 
+        self.custom_apps = {}
+
         # Пути к приложениям
         self.music_apps = {
             'default': os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk',
@@ -64,7 +66,8 @@ class FridayAssistant:
         
         self.app_paths = {
             'steam': r'C:\Program Files (x86)\Steam\steam.exe',
-            'telegram': os.path.expanduser('~') + r'\AppData\Roaming\Telegram Desktop\Telegram.exe'
+            'telegram': os.path.expanduser('~') + r'\AppData\Roaming\Telegram Desktop\Telegram.exe',
+            'explorer': 'explorer.exe'
         }
 
         self.weather_url = "https://yandex.ru/pogoda/"
@@ -86,7 +89,6 @@ class FridayAssistant:
         self.yandex_music_token = ""
         self.init_yandex_music()
 
-
         self.tray_icon = None
         self.tray_thread = None
         self.hotkey_thread = None
@@ -96,8 +98,8 @@ class FridayAssistant:
         # Личностные настройки
         self.personality = {
             'name': 'Пятница',
-            'mood': 'neutral',  # neutral, happy, sad, excited
-            'verbosity': 'normal',  # concise, normal, detailed
+            'mood': 'neutral',
+            'verbosity': 'normal',
             'learning_mode': False
         }
         
@@ -121,15 +123,14 @@ class FridayAssistant:
         }
 
         self.app_name_mapping = {
-        'проводник': 'explorer',
-        'браузер': 'yandex',  
-        'телеграм': 'telegram',
-        'стим': 'steam',
-        'word': 'winword',
-        'excel': 'excel',
-        'дискорд': 'discord'
-    }
-        
+            'проводник': 'explorer',
+            'браузер': 'yandex',
+            'телеграм': 'telegram',
+            'стим': 'steam',
+            'word': 'winword',
+            'excel': 'excel',
+            'дискорд': 'discord'
+        }
         
         # История разговоров и база знаний
         self.conversation_history = deque(maxlen=10)
@@ -159,7 +160,24 @@ class FridayAssistant:
         self.setup_learned_commands()
         self.preload_common_phrases()
 
+        self.cleanup_old_tts_cache()
+
     # ========== Базовые функции ==========
+
+    def cleanup_old_tts_cache(self, max_age_days=7):
+        cache_dir = tempfile.gettempdir()
+        now = time.time()
+        cutoff = now - (max_age_days * 86400)
+
+        for filename in os.listdir(cache_dir):
+            if filename.startswith('tts_') and filename.endswith('.mp3'):
+                filepath = os.path.join(cache_dir, filename)
+                try:
+                    if os.path.getmtime(filepath) < cutoff:
+                        os.remove(filepath)
+                except Exception as e:
+                    print(f"Ошибка удаления кэша {filename}: {e}")
+
     def configure_recognizer(self):
         self.recognizer.dynamic_energy_threshold = False
         self.recognizer.pause_threshold = self.pause_threshold
@@ -174,13 +192,11 @@ class FridayAssistant:
 
     # ========== Функции личности ==========
     def get_response(self, response_type):
-        """Получить ответ с учетом текущего настроения"""
         mood_responses = self.responses.get(response_type, {}).get(self.personality['mood'], [])
         default_responses = self.responses.get(response_type, {}).get('neutral', ["..."])
         return random.choice(mood_responses if mood_responses else default_responses)
 
     def adjust_personality(self):
-        """Адаптировать личность на основе истории взаимодействий"""
         recent_interactions = [i for i in list(self.conversation_history)[-5:] if isinstance(i, dict)]
         
         if recent_interactions:
@@ -203,7 +219,6 @@ class FridayAssistant:
 
     # ========== Функции обучения ==========
     def setup_learned_commands(self):
-        """Настройка изученных команд"""
         self.learn_command(
             r'запомни что (.*) это (.*)',
             self._learn_fact_command,
@@ -229,7 +244,6 @@ class FridayAssistant:
         )
 
     def learn_command(self, command_pattern, action_func, description=""):
-        """Добавить новую команду в базу знаний"""
         command_id = hashlib.md5(command_pattern.encode()).hexdigest()
         self.knowledge_base['learned_commands'][command_id] = {
             'pattern': command_pattern,
@@ -239,16 +253,44 @@ class FridayAssistant:
         }
         self.save_knowledge()
 
+    def find_application(self, app_name):
+        """Пытается найти приложение в стандартных местах с проверкой исполняемого файла"""
+        common_paths = [
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            os.path.expanduser("~") + r"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs",
+            os.path.expanduser("~") + r"\Desktop"
+        ]
+    
+        # Проверяем известные расширения
+        extensions = ['.exe', '.lnk', '.bat']
+    
+        for path in common_paths:
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    # Ищем файлы, содержащие название приложения
+                    if app_name.lower() in file.lower():
+                        for ext in extensions:
+                            if file.lower().endswith(ext):
+                                full_path = os.path.join(root, file)
+                                # Дополнительная проверка для .exe файлов
+                                if ext == '.exe':
+                                    try:
+                                        # Проверяем, является ли файл исполняемым
+                                        if os.access(full_path, os.X_OK):
+                                            return full_path
+                                    except:
+                                        continue
+                                else:
+                                    return full_path
+        return None
+
     def learn_from_interaction(self, command, success):
-        """Анализировать взаимодействие и учиться"""
         clean_command = re.sub(r'\b(пожалуйста|сейчас|мне|можно|бы|ли)\b', '', command, flags=re.IGNORECASE).strip()
         
-        # Если команда не была обработана, предложить обучение
         if not success and self.personality['learning_mode']:
             self.async_speak("Я не знаю как ответить на это. Не могли бы вы научить меня?")
-            # Здесь можно добавить логику для обучения новым командам
             
-        # Сохраняем историю взаимодействий
         self.conversation_history.append({
             'command': command,
             'success': success,
@@ -258,25 +300,32 @@ class FridayAssistant:
         self.adjust_personality()
 
     def save_knowledge(self):
-        """Сохранить базу знаний на диск"""
         try:
             with open('friday_knowledge.pkl', 'wb') as f:
-                pickle.dump(self.knowledge_base, f)
+                data = {
+                    'facts': self.knowledge_base['facts'],
+                    'jokes': self.knowledge_base['jokes'],
+                    'learned_commands': self.knowledge_base['learned_commands'],
+                    'custom_apps': self.custom_apps
+                }
+                pickle.dump(data, f)
         except Exception as e:
             print(f"Ошибка сохранения знаний: {e}")
 
     def load_knowledge(self):
-        """Загрузить базу знаний с диска"""
         try:
             if os.path.exists('friday_knowledge.pkl'):
                 with open('friday_knowledge.pkl', 'rb') as f:
-                    self.knowledge_base = pickle.load(f)
+                    data = pickle.load(f)
+                    self.knowledge_base['facts'] = data.get('facts', {})
+                    self.knowledge_base['jokes'] = data.get('jokes', [])
+                    self.knowledge_base['learned_commands'] = data.get('learned_commands', {})
+                    self.custom_apps = data.get('custom_apps', {})
         except Exception as e:
             print(f"Ошибка загрузки знаний: {e}")
 
     # ========== Обработчики изученных команд ==========
     def _learn_fact_command(self, command):
-        """Обработчик для запоминания фактов"""
         match = re.match(r'запомни что (.*) это (.*)', command, re.IGNORECASE)
         if match:
             key, value = match.groups()
@@ -287,7 +336,6 @@ class FridayAssistant:
         return False
         
     def _recall_fact_command(self, command):
-        """Обработчик для вспоминания фактов"""
         match = re.match(r'(какое|какой|что такое) (.*)\?', command, re.IGNORECASE)
         if match:
             item = match.group(2).strip().lower()
@@ -299,7 +347,6 @@ class FridayAssistant:
         return False
 
     def _tell_joke_command(self, command):
-        """Обработчик для рассказа шуток"""
         if self.knowledge_base['jokes']:
             joke = random.choice(self.knowledge_base['jokes'])
             self.async_speak(joke)
@@ -308,7 +355,6 @@ class FridayAssistant:
         return False
 
     def _tell_name_command(self, command):
-        """Обработчик для представления"""
         moods = {
             'happy': f"Меня зовут {self.personality['name']}! Рада познакомиться!",
             'sad': f"{self.personality['name']}...",
@@ -317,11 +363,84 @@ class FridayAssistant:
         self.async_speak(moods.get(self.personality['mood'], moods['neutral']))
         return True
 
+    def handle_unknown_command(self, command):
+        if not command:
+            return False
+            
+        self.async_speak("Я не знаю такой команды. Скажите 'Да', чтобы научить меня, или 'Нет', чтобы пропустить.")
+        response = self.listen_for_response()
+
+        if response and "да" in response.lower():
+            self.async_speak("Что мне делать, когда вы говорите: " + command + "?")
+            action_description = self.listen_for_response()
+
+            if action_description:
+                self.learn_new_command(
+                    command_pattern=command,
+                    action=lambda: self.execute_custom_action(action_description),
+                    description=f"Пользовательская команда: {action_description}"
+                )
+                self.async_speak("Теперь я знаю эту команду! Попробуйте сказать её снова.")
+                return True
+            else:
+                self.async_speak("Не расслышала действие. Попробуйте позже.")
+                return False
+        else:
+            return False
+
+    def execute_custom_action(self, action_description):
+        try:
+            action_description = action_description.lower()
+        
+            if "открой" in action_description:
+                app_name = action_description.replace("открой", "").strip()
+                # Проверяем системные имена приложений
+                if app_name in self.app_name_mapping:
+                    app_name = self.app_name_mapping[app_name]
+                
+                paths_to_check = [
+                    r"C:\Program Files",
+                    r"C:\Program Files (x86)",
+                    os.path.expanduser("~") + r"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+                ]
+                
+                for path in paths_to_check:
+                    for root, dirs, files in os.walk(path):
+                        if app_name + ".exe" in files:
+                            os.startfile(os.path.join(root, app_name + ".exe"))
+                            return True
+                            
+                # Если не нашли, пробуем стандартные пути
+                if app_name in self.app_paths:
+                    os.startfile(self.app_paths[app_name])
+                    return True
+                    
+                self.async_speak(f"Не нашла приложение {app_name}.")
+                return False
+            
+            elif "закрой" in action_description:
+                app_name = action_description.replace("закрой", "").strip()
+                return self.close_app(app_name)
+            
+            else:
+                self.async_speak("Я пока не умею это делать.")
+                return False
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            return False
+
     # ========== Основные функции ассистента ==========
     def speak(self, text):
+        if not text:
+            return
+            
         print(f"[{self.personality['name']}]: {text}")
         try:
             cache_file = self.get_tts_filename(text)
+
+            cache_dir = os.path.dirname(cache_file)
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
 
             if text in self.tts_cache and os.path.exists(self.tts_cache[text]):
                 mixer.music.load(self.tts_cache[text])
@@ -341,6 +460,9 @@ class FridayAssistant:
 
                 while mixer.music.get_busy():
                     time.sleep(0.1)
+                    
+            # Освобождаем ресурсы
+            mixer.music.unload()
         except Exception as e:
             print(f"Ошибка воспроизведения: {e}")
             print(f"(Ошибка TTS): {text}")
@@ -349,23 +471,32 @@ class FridayAssistant:
         running_apps = {}
         for proc in psutil.process_iter(['name', 'pid', 'exe']):
             try:
-                app_name = proc.info['name'].replace('exe', '').lower()
+                app_name = proc.info['name'].replace('.exe', '').lower()
                 running_apps[app_name] = proc
             except Exception as e:
                 continue
         return running_apps
 
     def async_speak(self, text):
+        if not text:
+            return
+            
         thread = Thread(target=self.speak, args=(text,))
         thread.start()
 
     def calculate_audio_energy(self, audio_data):
+        if not audio_data:
+            return 0
+            
         audio_buffer = np.frombuffer(audio_data.get_raw_data(), dtype=np.int16)
         if len(audio_buffer) == 0:
             return 0
         return 20 * np.log10(np.sqrt(np.mean(audio_buffer**2)) + 1e-10)
 
     def update_energy_threshold(self, current_energy):
+        if current_energy <= 0:
+            return
+            
         self.energy_history.append(current_energy)
         
         if len(self.energy_history) > 5:
@@ -424,29 +555,52 @@ class FridayAssistant:
             
         return False
 
+    def listen_for_response(self, timeout=5):
+        with sr.Microphone() as source:
+            print("Слушаю")
+            try:
+                audio = self.recognizer.listen(source, timeout=timeout)
+                text = self.recognizer.recognize_google(audio, language="ru-RU").lower()
+                return text
+            except sr.UnknownValueError:
+                return None
+            except sr.RequestError:
+                return None
+            except Exception as e:
+                print(f"Ошибка при прослушивании: {e}")
+                return None
+
+    def load_tray_image(self):
+        try:
+            icon_path = os.path.join("assets", "friday_icon.png")
+            return Image.open(icon_path)
+        except Exception as e:
+            print(f"Ошибка загрузки иконки: {e}. Используется стандартная иконка.")
+            image = Image.new('RGB', (64, 64), 'black')
+            return image
+
     def setup_tray_icon(self):
-        image = Image.new('RGB', (64, 64), 'black')
+        image = self.load_tray_image()
         menu = (
             pystray.MenuItem("Активировать", self.wake_up),
             pystray.MenuItem("Настройки", self.open_settings),
             pystray.MenuItem("Выход", self.exit_app),
         )
         self.tray_icon = pystray.Icon("Friday", image, "Friday Assistant", menu)
-        self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
-        self.tray_thread.start()
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def setup_hotkeys(self):
         keyboard.add_hotkey('ctrl+alt+f', self.wake_up)
         self.hotkey_thread = threading.Thread(target=keyboard.wait, daemon=True)
         self.hotkey_thread.start()
 
-
     def open_settings(self):
         self.async_speak("Открываю настройки")    
 
     def exit_app(self):
         self.should_exit = True
-        self.tray_icon.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
         self.async_speak("Выключаюсь. До свидания!")
         sys.exit(0)
 
@@ -510,14 +664,45 @@ class FridayAssistant:
         self.energy_history.clear()
         self.speak("Калибровка завершена. Готова к работе.")
 
+    def learn_new_command(self, command_pattern, action_func, description=""):
+        command_id = hashlib.md5(command_pattern.encode()).hexdigest()
+        self.knowledge_base['learned_commands'][command_id] = {
+            'pattern': command_pattern,
+            'action': action_func,
+            'description': description,
+            'usage_count': 0
+        }
+        self.save_knowledge() 
+
     # ========== Функции приложений ==========
     def calculate(self, expression):
         try:
-            cleaned_expr = re.sub(r'[^\d+\-*/.()]', '', expression)
-            if not cleaned_expr:
+            if not expression:
                 raise ValueError("Пустое выражение")
 
-            result = eval(cleaned_expr, {'__builtins__': None}, {})
+            # Безопасные математические функции
+            safe_dict = {
+                'abs': abs,
+                'ceil': math.ceil,
+                'floor': math.floor,
+                'round': round,
+                'sqrt': math.sqrt,
+                'sin': math.sin,
+                'cos': math.cos,
+                'tan': math.tan,
+                'pi': math.pi,
+                'e': math.e
+            }
+
+            # Очищаем выражение от опасных символов
+            cleaned_expr = re.sub(r'[^0-9+\-*/.()^% ]', '', expression)
+            
+            # Проверяем на наличие опасных конструкций
+            if re.search(r'(__|import|exec|eval|open|file|lambda|compile)', cleaned_expr):
+                raise ValueError("Недопустимое выражение")
+
+            # Вычисляем с ограниченным контекстом
+            result = eval(cleaned_expr, {'__builtins__': None}, safe_dict)
             self.async_speak(f"Результат: {result}")
             return True
         except Exception as e:
@@ -526,7 +711,10 @@ class FridayAssistant:
             return False
         
     def handle_system_commands(self, command):
-    # Закрытие приложений
+        if not command:
+            return False
+            
+        # Закрытие приложений
         if any(cmd in command for cmd in ["закрой приложение", "заверши процесс", "закрой программу"]):
             app_name = re.sub(r'(закрой|приложение|программу|процесс)', '', command, flags=re.IGNORECASE).strip()
             if not app_name:
@@ -534,7 +722,7 @@ class FridayAssistant:
                 return False
             return self.close_app(app_name)
     
-    # Список запущенных приложений
+        # Список запущенных приложений
         elif any(cmd in command for cmd in ["какие приложения открыты", "список программ"]):
             running_apps = ", ".join(self.get_running_apps().keys())
             self.async_speak(f"Запущены: {running_apps}")
@@ -568,7 +756,6 @@ class FridayAssistant:
             self.async_speak(f"Не удалось закрыть {app_name}.")
             return False
         
-
     def start_music_player(self, player_name=None):
         try:
             app_name = player_name or 'default'
@@ -616,7 +803,6 @@ class FridayAssistant:
             self.async_speak("Не удалось изменить громкость голоса")
             return False
 
-
     def adjust_voice_volume(self, direction):
         try:
             step = 20
@@ -657,6 +843,7 @@ class FridayAssistant:
 
     def launch_app(self, app_name):
         try:
+            # Сначала проверяем стандартные приложения
             if app_name in self.app_paths:
                 path = self.app_paths[app_name]
                 if os.path.exists(path):
@@ -664,8 +851,52 @@ class FridayAssistant:
                     self.async_speak(f"Запускаю {app_name}")
                     return True
                 else:
-                    self.async_speak(f"{app_name} не найден по указаному пути")
+                    self.async_speak(f"{app_name} не найден по указанному пути")
                     return False
+        
+            # Затем проверяем пользовательские приложения
+            if app_name in self.custom_apps:
+                path = self.custom_apps[app_name]
+                if os.path.exists(path):
+                    os.startfile(path)
+                    self.async_speak(f"Запускаю {app_name}")
+                    return True
+                else:
+                    del self.custom_apps[app_name]  # Удаляем нерабочий путь
+                    self.save_knowledge()
+        
+            # Пытаемся найти приложение автоматически
+            found_path = self.find_application(app_name)
+            if found_path:
+                self.custom_apps[app_name] = found_path
+                self.save_knowledge()
+                os.startfile(found_path)
+                self.async_speak(f"Нашла и запускаю {app_name}")
+                return True
+        
+            # Если не нашли, предлагаем обучение
+            self.async_speak(f"Не знаю, где находится {app_name}. Хотите указать путь?")
+            response = self.listen_for_response()
+        
+            if response and "да" in response.lower():
+                self.async_speak("Пожалуйста, скажите полный путь к приложению")
+                path_response = self.listen_for_response()
+                if path_response:
+                    # Очищаем путь от лишних слов
+                    clean_path = re.sub(r'(путь|приложение|это|находится)', '', path_response, flags=re.IGNORECASE).strip()
+                    if os.path.exists(clean_path):
+                        self.custom_apps[app_name] = clean_path
+                        self.save_knowledge()
+                        os.startfile(clean_path)
+                        self.async_speak(f"Запомнила и запускаю {app_name}")
+                        return True
+                    else:
+                        self.async_speak("Не могу найти указанный путь. Попробуйте еще раз.")
+                        return False
+        
+            self.async_speak(f"Не удалось запустить {app_name}")
+            return False
+        
         except Exception as e:
             print(f"Ошибка запуска {app_name}: {e}")
             self.async_speak(f"Не удалось запустить {app_name}")
@@ -679,26 +910,22 @@ class FridayAssistant:
                 playback_state = self.get_playback_state()
             
                 if action == 'play_pause':
-                    if playback_state and playback_state['is_playing']:
-                        self.yandex_music_client.play_pause()
-                        self.async_speak("Пауза")
-                    else:
-                        self.yandex_music_client.play_pause()
-                        self.async_speak("Продолжаю")
+                    keyboard.press_and_release('play/pause media')
+                    self.async_speak("Пауза" if playback_state and playback_state['is_playing'] else "Продолжаю")
                     return True
-                
+
                 elif action == "next":
-                    self.yandex_music_client.next_track()
+                    keyboard.press_and_release('next track')
                     self.async_speak("Следующий трек")
                     return True
-                
+
                 elif action == "previous":
-                    self.yandex_music_client.previous_track()
+                    keyboard.press_and_release('previous track')
                     self.async_speak("Предыдущий трек")
                     return True
-                
+
                 elif action == "stop":
-                    self.yandex_music_client.pause()
+                    keyboard.press_and_release('play/pause media')
                     self.async_speak("Остановлено")
                     return True
                 
@@ -895,14 +1122,24 @@ class FridayAssistant:
         except Exception as e:
             print(f"Ошибка сохранения кэша TTS: {e}")
 
+    def app_exists(self, app_name):
+        """Проверяет, установлено ли приложение."""
+        common_paths = [
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            os.path.expanduser("~") + r"\AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+        ]
+        for path in common_paths:
+            if os.path.exists(os.path.join(path, app_name + ".exe")):
+                return True
+        return False
+
     # ========== Обработка команд ==========
     def process_command(self, command):
         if not command:
             return False
-            
-        print(f"Обработка команды: {command}")
         
-        # Сначала проверяем изученные команды
+    # 1. Проверяем изученные команды
         for cmd_id, cmd_data in self.knowledge_base['learned_commands'].items():
             if re.search(cmd_data['pattern'], command, re.IGNORECASE):
                 try:
@@ -911,12 +1148,20 @@ class FridayAssistant:
                     self.learn_from_interaction(command, True)
                     return result
                 except Exception as e:
-                    print(f"Ошибка выполнения изученной команды: {e}")
-        
-        # Затем стандартные команды
+                    print(f"Ошибка выполнения команды: {e}")
+    
+    # 2. Проверяем встроенные команды
         command_processed = self._process_builtin_command(command)
-        self.learn_from_interaction(command, command_processed)
-        return command_processed
+        if command_processed:
+            self.learn_from_interaction(command, True)
+            return True
+        
+    # 3. Предлагаем обучение (если команда неизвестна)
+        if self.handle_unknown_command(command):  
+            return True
+        else:  
+            self.async_speak("Не поняла команду")
+            return False
         
     def _process_builtin_command(self, command):
         """Обработка встроенных команд"""
@@ -962,6 +1207,11 @@ class FridayAssistant:
                 return self.start_music_player('spotify')
             else:
                 return self.start_music_player()
+
+        if command.startswith(("открой", "запусти")):
+            app_name = re.sub(r'^(открой|запусти)\s*', '', command, flags=re.IGNORECASE).strip()
+            if app_name:
+                return self.launch_app(app_name)
 
         # Переводчик
         elif any(cmd in command for cmd in ["переведи", "перевод", "как сказать"]):
