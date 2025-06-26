@@ -22,7 +22,8 @@ import pyautogui
 from threading import Thread
 import pickle
 import hashlib
-from googletrans import Translator, LANGUAGES
+from deep_translator import GoogleTranslator
+from deep_translator.exceptions import TranslationNotFound
 import psutil
 import pystray
 from PIL import Image
@@ -44,7 +45,7 @@ class FridayAssistant:
         self.ambient_adjust_duration = 2
         
         # Инициализация компонентов
-        self.volume_control = self.init_volume()
+        self.volume_control = None
         self.recognizer = sr.Recognizer()
         self.configure_recognizer()
         self.energy_history = deque(maxlen=15)
@@ -145,7 +146,6 @@ class FridayAssistant:
         }
         
         # Переводчик
-        self.translator = Translator()
         self.language_codes = {
             'английский': 'en',
             'русский': 'ru',
@@ -161,6 +161,8 @@ class FridayAssistant:
         self.preload_common_phrases()
 
         self.cleanup_old_tts_cache()
+
+        self.volume_control = self.init_volume()
 
     # ========== Базовые функции ==========
 
@@ -316,13 +318,16 @@ class FridayAssistant:
         try:
             if os.path.exists('friday_knowledge.pkl'):
                 with open('friday_knowledge.pkl', 'rb') as f:
-                    data = pickle.load(f)
-                    self.knowledge_base['facts'] = data.get('facts', {})
-                    self.knowledge_base['jokes'] = data.get('jokes', [])
-                    self.knowledge_base['learned_commands'] = data.get('learned_commands', {})
-                    self.custom_apps = data.get('custom_apps', {})
+                    if os.path.getsize('friday_knowledge.pkl') > 0:
+                        data = pickle.load(f)
+                        self.knowledge_base['facts'] = data.get('facts', {})
+                        self.knowledge_base['jokes'] = data.get('jokes', [])
+                        self.knowledge_base['learned_commands'] = data.get('learned_commands', {})
+                        self.custom_apps = data.get('custom_apps', {})
         except Exception as e:
             print(f"Ошибка загрузки знаний: {e}")
+
+            self.knowledge_base = {'facts': {}, 'jokes': [], 'learned_commands': {}}
 
     # ========== Обработчики изученных команд ==========
     def _learn_fact_command(self, command):
@@ -1066,17 +1071,25 @@ class FridayAssistant:
     def translate_text(self, text, target_lang='ru'):
         try:
             lang_code = self.language_codes.get(target_lang, target_lang)
-            translation = self.translator.translate(text, dest=lang_code)
+        
 
+            translation = GoogleTranslator(
+                source='auto',  
+                target=lang_code
+            ).translate(text)
+        
             return {
-                'text': translation.text,
-                'pronunciation': getattr(translation, 'pronunciation', None),
-                'src_lang': LANGUAGES.get(translation.src, translation.src),
-                'dest_lang': LANGUAGES.get(lang_code, lang_code)
+                'text': translation,
+                'pronunciation': None, 
+                'src_lang': 'auto',
+                'dest_lang': lang_code
             }
-
+        
+        except TranslationNotFound:
+            print("Перевод не найден")
+            return None
         except Exception as e:
-            print(f"ошибка перевода: {e}")
+            print(f"Ошибка перевода: {e}")
             return None
 
     def get_tts_filename(self, text):
@@ -1216,12 +1229,14 @@ class FridayAssistant:
         # Переводчик
         elif any(cmd in command for cmd in ["переведи", "перевод", "как сказать"]):
             try:
+        # Определяем целевой язык
                 target_lang = 'русский'
                 for lang in self.language_codes:
                     if lang in command:
                         target_lang = lang
                         break
 
+        # Извлекаем текст для перевода
                 if "на" in command:
                     text_to_translate = command.split("на")[0].replace("переведи", "").strip()
                 else:
@@ -1229,23 +1244,17 @@ class FridayAssistant:
 
                 if text_to_translate:
                     result = self.translate_text(text_to_translate, target_lang)
-
-                    if result:
-                        response = f"перевод на {target_lang}: {result['text']}"
-                        if result['pronunciation']:
-                            response += f"\nПроизношение: {result['pronunciation']}"
-                        self.async_speak(response)
-                        return True
-                    else:
-                        self.async_speak("Не удалось выполнить перевод")
-                        return False
+                if result:
+                    response = f"Перевод на {target_lang}: {result['text']}"
+                    self.async_speak(response)
+                    return True
                 else:
-                    self.async_speak("Пожалуйста укажите текст для перевода")
+                    self.async_speak("Не удалось выполнить перевод")
                     return False
             except Exception as e:
                 print(f"Ошибка обработки перевода: {e}")
-                self.async_speak("Произошла ошибка при переводе")
-                return False                  
+                self.async_speak("Ошибка при переводе")
+                return False              
 
         # Управление музыкой
         elif any(cmd in command for cmd in ["пауза", "останови музыку", "приостанови музыку"]):
