@@ -58,6 +58,9 @@ class FridayAssistant:
 
         self.custom_apps = {}
 
+
+
+
         # Пути к приложениям
         self.music_apps = {
             'default': os.path.expanduser('~') + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Яндекс Музыка.lnk',
@@ -179,6 +182,15 @@ class FridayAssistant:
                         os.remove(filepath)
                 except Exception as e:
                     print(f"Ошибка удаления кэша {filename}: {e}")
+
+    def open_settings(self):
+        self.settings_window = SettingsWindow()
+        self.settings_window.show()
+        self.async_speak("Открываю настройки")  
+
+    def load_settings(self):
+        self.tts_volume = self.settings.value("voice_volume", 50) / 100
+        self.recognizer.energy_threshold = self.settings.value("mic_sensitivity", 4000)
 
     def configure_recognizer(self):
         self.recognizer.dynamic_energy_threshold = False
@@ -594,13 +606,15 @@ class FridayAssistant:
         self.tray_icon = pystray.Icon("Friday", image, "Friday Assistant", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
+    def apply_settings(self, settings):
+        self.tts_volume = settings.value("voice_volume", 50) / 100
+        self.recognizer.energy_threshold = settings.value("mic_sensivity", 4000)
+
     def setup_hotkeys(self):
         keyboard.add_hotkey('ctrl+alt+f', self.wake_up)
         self.hotkey_thread = threading.Thread(target=keyboard.wait, daemon=True)
         self.hotkey_thread.start()
-
-    def open_settings(self):
-        self.async_speak("Открываю настройки")    
+   
 
     def exit_app(self):
         self.should_exit = True
@@ -1380,8 +1394,7 @@ class FridayAssistant:
                 self.save_tts_cache()
                 self.save_knowledge()
 
-if __name__ == '__main__':
-
+if __name__ == '__main__': 
     assistant = FridayAssistant()
     try:
         assistant.run()
