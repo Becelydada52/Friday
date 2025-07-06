@@ -31,6 +31,7 @@ import threading
 import keyboard
 from plyer import notification
 import math
+from queue import Queue
 
 mixer.init()
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -58,6 +59,12 @@ class FridayAssistant:
 
         self.custom_apps = {}
 
+
+        self.speech_queue = Queue()
+        self.is_speaking = False
+
+        self.interrupt_speech = False
+        self.current_speech_thread = None
 
 
 
@@ -394,7 +401,7 @@ class FridayAssistant:
             if action_description:
                 self.learn_new_command(
                     command_pattern=command,
-                    action=lambda: self.execute_custom_action(action_description),
+                    action_func=lambda: self.execute_custom_action(action_description),
                     description=f"Пользовательская команда: {action_description}"
                 )
                 self.async_speak("Теперь я знаю эту команду! Попробуйте сказать её снова.")
@@ -447,42 +454,40 @@ class FridayAssistant:
             return False
 
     # ========== Основные функции ассистента ==========
-    def speak(self, text):
-        if not text:
-            return
-            
-        print(f"[{self.personality['name']}]: {text}")
+
+    def _speak_in_thread(self, text, finished_event):
         try:
+
+            self.interrupt_speech = False
+
             cache_file = self.get_tts_filename(text)
-
-            cache_dir = os.path.dirname(cache_file)
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
-
-            if text in self.tts_cache and os.path.exists(self.tts_cache[text]):
-                mixer.music.load(self.tts_cache[text])
-                mixer.music.set_volume(self.tts_volume)
-                mixer.music.play()
-
-                while mixer.music.get_busy():
-                    time.sleep(0.1)
-            else:
+            if not os.path.exists(cache_file):
                 tts = gTTS(text=text, lang='ru')
                 tts.save(cache_file)
 
-                self.tts_cache[text] = cache_file
-                mixer.music.load(cache_file)
-                mixer.music.set_volume(self.tts_volume)
-                mixer.music.play()
+            mixer.music.load(cache_file)
+            mixer.music.set_volume(self.tts_volume)
+            mixer.music.play()
+            
+            while mixer.music.get_busy() and not self.interrupt_speech:
+                time.sleep(0.1)
 
-                while mixer.music.get_busy():
-                    time.sleep(0.1)
-                    
-            # Освобождаем ресурсы
+            mixer.music.stop()
             mixer.music.unload()
+
+            if self.interrupt_speech:
+                print("Речь прервана пользователем")
+                return
+
         except Exception as e:
             print(f"Ошибка воспроизведения: {e}")
             print(f"(Ошибка TTS): {text}")
+        finally:
+            finished_event.set()
+
+
+
+
 
     def get_running_apps(self):
         running_apps = {}
@@ -494,11 +499,35 @@ class FridayAssistant:
                 continue
         return running_apps
 
+    def _process_queue(self):
+        while not self.speech_queue.empty():
+            self.is_speaking = True
+            text = self.speech_queue.get()
+            self._speak_in_thread(text, threading.Event())
+        self.is_speaking = False
+
     def async_speak(self, text):
+        self.speech_queue.put(text)
+        if not self.is_speaking:
+            self._process_queue()
+       
         if not text:
             return
-            
-        thread = Thread(target=self.speak, args=(text,))
+
+        if self.current_speech_thread and self.current_speech_thread.is_alive():
+            self.interrupt_speech = True
+            self.current_speech_thread.join(timeout=0.5)
+
+        self.interrupt_speech = False
+        self.current_speech_thread = Thread(target=self._speak_in_thread, args=(text,))
+        self.current_speech_thread.daemon = True
+        self.current_speech_thread.start()
+
+        if mixer.music.get_busy():
+            mixer.music.stop()
+
+        thread = Thread(target=self._speak_in_thread, args=(text,))
+        thread.daemon = True
         thread.start()
 
     def calculate_audio_energy(self, audio_data):
@@ -524,8 +553,8 @@ class FridayAssistant:
             
             self.recognizer.energy_threshold = np.clip(
                 smoothed_threshold,
-                max(300, background_level * 1.3),
-                min(6000, background_level * 3)
+                max(300, int(background_level * 1.3)),
+                min(6000, int(background_level * 3))
             )
 
     def listen_for_trigger(self, source):
@@ -625,12 +654,13 @@ class FridayAssistant:
 
     def show_notification(self, title, message):
         try:
-            notification.notify(
-                title=title,
-                message=message,
-                app_name="Friday Assistant",
-                timeout=5
-            )
+            if notification:
+                notification.notify(
+                    title=title,
+                    message=message,
+                    app_name="Friday Assistant",
+                    timeout=5
+                )
         except Exception as e:
             print(f"Ошибка уведомления: {e}")
 
@@ -670,6 +700,7 @@ class FridayAssistant:
     def return_to_sleep(self):
         if self.is_active:
             self.is_active = False
+            self.interrupt_speech = True
             print("Возврат в режим ожидания...")
 
     def calibrate_microphone(self, source):
@@ -681,7 +712,7 @@ class FridayAssistant:
         self.recognizer.energy_threshold = self.recognizer.energy_threshold * 1.3
         self.initial_energy_threshold = self.recognizer.energy_threshold
         self.energy_history.clear()
-        self.speak("Калибровка завершена. Готова к работе.")
+        self.async_speak("Калибровка завершена. Готова к работе.")
 
     def learn_new_command(self, command_pattern, action_func, description=""):
         command_id = hashlib.md5(command_pattern.encode()).hexdigest()
@@ -719,6 +750,9 @@ class FridayAssistant:
             # Проверяем на наличие опасных конструкций
             if re.search(r'(__|import|exec|eval|open|file|lambda|compile)', cleaned_expr):
                 raise ValueError("Недопустимое выражение")
+
+            if not re.match(r'^[\d+\-*/.()^% ]+$', cleaned_expr):
+                raise ValueError("Недопустимые символы в выражении")
 
             # Вычисляем с ограниченным контекстом
             result = eval(cleaned_expr, {'__builtins__': None}, safe_dict)
@@ -802,7 +836,8 @@ class FridayAssistant:
     def set_volume(self, level):
         try:
             vol = max(0.0, min(1.0, level/100.0))
-            self.volume_control.SetMasterVolumeLevelScalar(vol, None)
+            if self.volume_control:
+                self.volume_control.SetMasterVolumeLevelScalar(vol, None)
             self.async_speak(f"Громкость {int(level)}%")
             return True
         except Exception as e:
@@ -980,9 +1015,11 @@ class FridayAssistant:
                 return None
             
             queue = self.yandex_music_client.queue(queues[0].id)
-            current_track = queue.get_current_track()
+            if not queue:
+                return None
+            current_track = queue.get_current_track() if queue else None
             return {
-                'is_playing': queue.get_playing_state(),
+                'is_playing': queue.get_playing_state() if queue else False,
                 'track': current_track,
                 'track_title': f"{current_track['title']} - {current_track['artists'][0]['name']}" if current_track else None
             }
@@ -1021,11 +1058,10 @@ class FridayAssistant:
         return self.play_on_youtube(query)
 
     def is_yandex_music_running(self):
-        try:
-            output = subprocess.check_output('tasklist', shell=True).decode('cp866', 'ignore')
-            return 'Яндекс Музыка' in output
-        except:
-            return False
+        for proc in psutil.process_iter(['name']):
+            if 'Яндекс Музыка' in proc.info['name']:
+                return True
+        return False
 
     def play_in_yandex_music(self, query):
         """Поиск музыки с автоматическим fallback"""
@@ -1284,6 +1320,13 @@ class FridayAssistant:
         
         if self.handle_system_commands(command):
             return True
+
+
+        elif any(cmd in command for cmd in ["прерви", "стоп", "замолчи", "заткнись", "хватит"]):
+            if mixer.music.get_busy():
+                self.interrupt_speech = True
+                self.return_to_sleep()
+                return True
         
 
 
@@ -1350,7 +1393,7 @@ class FridayAssistant:
 
         # Калибровка
         elif "калибровка" in command:
-            self.speak("Начинаю калибровку микрофона")
+            self.async_speak("Начинаю калибровку микрофона")
             self.calibrate_microphone(source=sys._getframe(1).f_locals.get('source'))
             return True
         
@@ -1386,10 +1429,10 @@ class FridayAssistant:
                         self.calibrate_microphone(source)
                         
             except KeyboardInterrupt:
-                self.speak(self.get_response('farewell'))
+                self.async_speak(self.get_response('farewell'))
             except Exception as e:
                 print(f"Критическая ошибка: {e}")
-                self.speak("Произошла системная ошибка. Попробуйте перезапустить меня.")
+                self.async_speak("Произошла системная ошибка. Попробуйте перезапустить меня.")
             finally:
                 self.save_tts_cache()
                 self.save_knowledge()
