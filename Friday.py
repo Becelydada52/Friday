@@ -111,8 +111,8 @@ class FridayAssistant:
         self.tray_icon = None
         self.tray_thread = None
         self.hotkey_thread = None
-        self.setup_tray_icon()
-        self.setup_hotkeys()
+        # self.setup_tray_icon()
+        # self.setup_hotkeys()
 
         # Личностные настройки
         self.personality = {
@@ -152,10 +152,7 @@ class FridayAssistant:
         }
 
         self.telegram_users = {
-            # сюда пишешь имя и id из @username_to_id_bot
-            # пример 
-            # "мария": "chat_id",
-            #....
+            'Матвей': '1151455439'
    
         }
         
@@ -732,24 +729,24 @@ class FridayAssistant:
             image = Image.new('RGB', (64, 64), 'black')
             return image
 
-    def setup_tray_icon(self):
-        image = self.load_tray_image()
-        menu = (
-            pystray.MenuItem("Активировать", self.wake_up),
-            pystray.MenuItem("Настройки", self.open_settings),
-            pystray.MenuItem("Выход", self.exit_app),
-        )
-        self.tray_icon = pystray.Icon("Friday", image, "Friday Assistant", menu)
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+    # def setup_tray_icon(self):
+    #     image = self.load_tray_image()
+    #     menu = (
+    #         pystray.MenuItem("Активировать", self.wake_up),
+    #         pystray.MenuItem("Настройки", self.open_settings),
+    #         pystray.MenuItem("Выход", self.exit_app),
+    #     )
+    #     self.tray_icon = pystray.Icon("Friday", image, "Friday Assistant", menu)
+    #     threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
-    def apply_settings(self, settings):
-        self.tts_volume = settings.value("voice_volume", 50) / 100
-        self.recognizer.energy_threshold = settings.value("mic_sensivity", 4000)
+    # def apply_settings(self, settings):
+    #     self.tts_volume = settings.value("voice_volume", 50) / 100
+    #     self.recognizer.energy_threshold = settings.value("mic_sensivity", 4000)
 
-    def setup_hotkeys(self):
-        keyboard.add_hotkey('ctrl+alt+f', self.wake_up)
-        self.hotkey_thread = threading.Thread(target=keyboard.wait, daemon=True)
-        self.hotkey_thread.start()
+    # def setup_hotkeys(self):
+    #     keyboard.add_hotkey('ctrl+alt+f', self.wake_up)
+    #     self.hotkey_thread = threading.Thread(target=keyboard.wait, daemon=True)
+    #     self.hotkey_thread.start()
    
 
     def exit_app(self):
