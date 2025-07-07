@@ -32,6 +32,10 @@ import keyboard
 from plyer import notification
 import math
 from queue import Queue
+from telegram import Bot
+from dotenv import load_dotenv
+
+
 
 mixer.init()
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -66,7 +70,11 @@ class FridayAssistant:
         self.interrupt_speech = False
         self.current_speech_thread = None
 
-
+        self.TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAMM_BOT_TOKEN") #смотрите API.env
+        self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID') #смотрите API.env
+        if not self.TELEGRAM_BOT_TOKEN or not self.TELEGRAM_CHAT_ID:
+            self.async_speak("API для телеграмма не настроен, рекомендую проверить токены")
+            print("Предупреждение: Telegram токен или chat_id не настроены")
 
         # Пути к приложениям
         self.music_apps = {
@@ -142,6 +150,14 @@ class FridayAssistant:
             'excel': 'excel',
             'дискорд': 'discord'
         }
+
+        self.telegram_users = {
+            # сюда пишешь имя и id из @username_to_id_bot
+            # пример 
+            # "мария": "chat_id",
+            #....
+   
+        }
         
         # История разговоров и база знаний
         self.conversation_history = deque(maxlen=10)
@@ -190,14 +206,14 @@ class FridayAssistant:
                 except Exception as e:
                     print(f"Ошибка удаления кэша {filename}: {e}")
 
-    def open_settings(self):
-        self.settings_window = SettingsWindow()
-        self.settings_window.show()
-        self.async_speak("Открываю настройки")  
+    #def open_settings(self):
+        #self.settings_window = SettingsWindow()
+        #self.settings_window.show()
+        #self.async_speak("Открываю настройки")  
 
-    def load_settings(self):
-        self.tts_volume = self.settings.value("voice_volume", 50) / 100
-        self.recognizer.energy_threshold = self.settings.value("mic_sensitivity", 4000)
+    #def load_settings(self):
+        #self.tts_volume = self.settings.value("voice_volume", 50) / 100
+        #self.recognizer.energy_threshold = self.settings.value("mic_sensitivity", 4000)
 
     def configure_recognizer(self):
         self.recognizer.dynamic_energy_threshold = False
@@ -319,6 +335,97 @@ class FridayAssistant:
         })
         
         self.adjust_personality()
+
+    def send_telegram_message_to_user(self, user_name, message):
+        """Отправка сообщения через Telegram бота"""
+        if not message or not isinstance(message, str):
+            self.async_speak("Сообщение не может быть пустым")
+            return False
+        
+        if not user_name or not isinstance(user_name, str):
+            self.async_speak("Не указано имя пользователя")
+            return False
+
+        try:
+            user_chat_id = self.telegram_users.get(user_name.lower())
+            if not user_chat_id:
+                self.async_speak(f"Пользователь {user_name} не найден в списке контактов")
+                return False
+
+            if not self.TELEGRAM_BOT_TOKEN:
+                self.async_speak("Telegram бот не настроен")
+                return False
+
+            try:
+                bot = Bot(token=self.TELEGRAM_BOT_TOKEN)
+                bot.send_message(
+                    chat_id=user_chat_id, 
+                    text=message,
+                    parse_mode='Markdown'
+                )
+                self.async_speak(f"Сообщение отправлено {user_name}")
+                return True
+            except Exception as e:
+                print(f"Ошибка отправки сообщения: {e}")
+                self.async_speak("Не удалось отправить сообщение. Проверьте подключение к интернету.")
+                return False
+            
+        except Exception as e:
+            print(f"Общая ошибка при отправке: {e}")
+            self.async_speak("Произошла ошибка при отправке сообщения")
+            return False
+        
+    def read_unread_telegram_messages_from_user(self, user_name, limit=5):
+        """Чтение непрочитанных сообщений с ограничением"""
+        try:
+            if not user_name:
+                self.async_speak("Не указано имя пользователя")
+                return False
+
+            user_chat_id = self.telegram_users.get(user_name.lower())
+            if not user_chat_id:
+                self.async_speak(f"Пользователь {user_name} не найден в списке контактов")
+                return False
+
+            if not self.TELEGRAM_BOT_TOKEN:
+                self.async_speak("Telegram бот не настроен")
+                return False
+
+            bot = Bot(token=self.TELEGRAM_BOT_TOKEN)
+            updates = bot.get_updates(
+                offset=-limit, 
+                limit=limit,
+                timeout=10
+            )
+
+            messages = []
+            for update in updates:
+                if (update.message and 
+                    str(update.message.chat_id) == str(user_chat_id) and 
+                    update.message.text):
+                    messages.append(update.message)
+    
+            if not messages:
+                self.async_speak(f"Нет новых сообщений от {user_name}")
+                return True
+
+            for msg in messages[-limit:]:  # Берем только последние
+                sender = msg.from_user.first_name or "Неизвестный"
+                self.async_speak(f"Сообщение от {sender}: {msg.text}")
+    
+            return True
+        except Exception as e:
+            print(f"Ошибка чтения сообщений: {e}")
+            self.async_speak("Не удалось проверить сообщения")
+            return False
+
+    def get_user_name(self, command):
+        match = re.search(r'отправь сообщение (\w+)', command)
+        if match:
+            return match.group(1)
+        else:
+            self.async_speak("Не распознал имя пользователя. Пожалуйста, повторите.")
+            return None
 
     def save_knowledge(self):
         try:
@@ -1212,6 +1319,7 @@ class FridayAssistant:
                     return result
                 except Exception as e:
                     print(f"Ошибка выполнения команды: {e}")
+
     
     # 2. Проверяем встроенные команды
         command_processed = self._process_builtin_command(command)
@@ -1275,6 +1383,27 @@ class FridayAssistant:
             app_name = re.sub(r'^(открой|запусти)\s*', '', command, flags=re.IGNORECASE).strip()
             if app_name:
                 return self.launch_app(app_name)
+
+
+        #отправка сообщений в телеграмм
+        elif any(cmd in command for cmd in ["отправь сообщение", "напиши"]):
+            match = re.match(r'отправь сообщение (\w+): (.+)', command)
+            if match:
+                user_name, message = match.groups()
+                self.send_telegram_message_to_user(user_name, message)
+            else:
+                self.async_speak("Не распознал имя пользователя или текст сообщения. Пожалуйста, повторите.")
+                return False
+
+
+        elif any(cmd in command for cmd in ["прочитай непрочитанные сообщения от", "проверь сообщения от"]):
+            match = re.match(r'прочитай непрочитанные сообщения от (\w+)', command)
+            if match:
+                user_name = match.group(1)
+                self.read_unread_telegram_messages_from_user(user_name)
+            else:
+                self.async_speak("Не распознал имя пользователя. Пожалуйста, повторите.")
+                return False
 
         # Переводчик
         elif any(cmd in command for cmd in ["переведи", "перевод", "как сказать"]):
@@ -1352,6 +1481,7 @@ class FridayAssistant:
             else:
                 self.async_speak("Пожалуйста, назовите выражение для вычисления")
                 return False
+                
 
         # Погода
         elif 'погода' in command:
