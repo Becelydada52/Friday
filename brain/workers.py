@@ -1,28 +1,9 @@
-"""
-Локальный интерфейс для ИИ-агента.
-MVP: чат с локальной LLM через Ollama + панель выполнения команд.
-
-Запуск:
-    pip install -r requirements.txt
-    python app.py
-
-Требования:
-    - Запущенный Ollama (ollama serve), модель уже подтянута (ollama pull <model>)
-"""
-
-import sys
-import json
+from PySide6.QtCore import QThread, Signal
 import subprocess
+import json
 import requests
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QPushButton, QSplitter, QLabel, QComboBox
-)
-from PySide6.QtGui import QTextCursor, QFont
-
-from brain.workers import OllamaWorker, CommandWorker
+OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
 class OllamaWorker(QThread):
@@ -91,31 +72,3 @@ class CommandWorker(QThread):
         except Exception as e:
             self.line_received.emit(f"[ошибка запуска] {e}")
             self.finished_ok.emit(-1)
-
-# Panels moved to ui.panels
-from ui.panels import ChatPanel, TerminalPanel
-
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Локальный ИИ-агент — интерфейс")
-        self.resize(1200, 750)
-
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(ChatPanel())
-        splitter.addWidget(TerminalPanel())
-        splitter.setSizes([700, 500])
-
-        self.setCentralWidget(splitter)
-
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
